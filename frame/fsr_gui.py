@@ -12,6 +12,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
 
+import fsr_arm  # noqa: E402
 import fsr_core as core  # noqa: E402
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -73,7 +74,10 @@ class App(Gtk.Window):
             pass
         self.get_style_context().add_class("root")
         self.busy = False
-        self.armed = None  # (cmd, 期限)
+        self.arm = fsr_arm.ArmState()  # 終了・再起動は 2 回押さないと実行しない
+        self.arm_msg = False
+        self.arm_timer = False
+        self.repair = False  # 「ペアリングし直す」で開いたペアリング画面(状態の更新で勝手に戻さない)
         self.code = ""
         self.pairing_in_progress = False
         self.pc = None
@@ -229,6 +233,8 @@ class App(Gtk.Window):
     def _show_pair(self):
         self.code = ""
         self._render_code()
+        self.repair = True
+        self.arm.disarm()
         self.stack.set_visible_child_name("pair")
         self._set_msg("")
 
@@ -263,6 +269,7 @@ class App(Gtk.Window):
             self._set_msg(err)
         else:
             self._set_msg("ペアリングしました: %s" % name)
+            self.repair = False
             self.stack.set_visible_child_name("search")
             self._kick()
         return False
@@ -272,19 +279,23 @@ class App(Gtk.Window):
         self.msg.set_text(text)
 
     def _operate(self, cmd):
-        if self.busy:
+        if self.busy or not self.status:
             return
         label = {"quit": "終了", "restart": "再起動"}[cmd]
-        st = self.status or {}
-        if st.get("vrchat"):
-            now = time.time()
-            if not (self.armed and self.armed[0] == cmd and self.armed[1] > now):
-                self.armed = (cmd, now + 6)
-                self._refresh_buttons()
-                self._set_msg("VRChat が起動中です。SteamVR を止めると VRChat も閉じることがあります。それでも「%s」するなら、もう一度押してください" % label)
-                GLib.timeout_add_seconds(6, self._disarm)
-                return
-        self.armed = None
+        btn = {"quit": "SteamVR終了", "restart": "再起動"}[cmd]
+        r = self.arm.press(cmd)
+        if r == fsr_arm.IGNORED:
+            return
+        if r == fsr_arm.ARMED:
+            note = "VRChat が起動中です。SteamVR を止めると VRChat も閉じることがあります。" if (self.status or {}).get("vrchat") else ""
+            self.arm_msg = True
+            self._set_msg("%s「%s」をもう一度押すと実行します(%d 秒以内)" % (note, btn, int(self.arm.timeout)))
+            self._refresh_buttons()
+            if not self.arm_timer:
+                self.arm_timer = True
+                GLib.timeout_add(250, self._arm_tick)
+            return
+        self.arm_msg = False
         self.busy = True
         self._refresh_buttons()
         self._set_msg("SteamVR を%sしています…(最大 1 分ほどかかります)" % label)
@@ -303,10 +314,15 @@ class App(Gtk.Window):
                 GLib.idle_add(self._op_done, cmd, False, "", None, "想定外のエラー: %s" % e)
         threading.Thread(target=work, daemon=True).start()
 
-    def _disarm(self):
-        if self.armed and self.armed[1] <= time.time():
-            self.armed = None
-            self._refresh_buttons()
+    def _arm_tick(self):
+        """待機中の表示(残り秒)を更新する。期限が切れたら元に戻す。"""
+        self._refresh_buttons()
+        if self.arm.armed():
+            return True
+        self.arm_timer = False
+        if self.arm_msg:
+            self.arm_msg = False
+            self._set_msg("")
         return False
 
     def _op_done(self, cmd, ok, detail, state, err):
@@ -332,12 +348,12 @@ class App(Gtk.Window):
         self.btn_restart.set_sensitive(enabled)
         for cmd, btn, normal, cls in (("quit", self.btn_quit, "SteamVR終了", "quit"),
                                       ("restart", self.btn_restart, "再起動", "restart")):
-            armed = bool(self.armed and self.armed[0] == cmd and self.armed[1] > time.time())
+            cd = self.arm.countdown(cmd)
             ctx = btn.get_style_context()
-            if armed:
+            if cd:
                 ctx.remove_class(cls)
                 ctx.add_class("armed")
-                btn.set_label("もう一度押して実行")
+                btn.set_label("もう一度押すと%s(%d)" % ({"quit": "終了", "restart": "再起動"}[cmd], cd))
             else:
                 ctx.remove_class("armed")
                 ctx.add_class(cls)
@@ -388,6 +404,7 @@ class App(Gtk.Window):
     def _ui_unpaired(self, pc):
         self.pc = pc
         self.status = None
+        self.arm.disarm()
         if self.stack.get_visible_child_name() != "pair":
             self.stack.set_visible_child_name("pair")
         self.pair_pc.set_text("見つかった PC: %s" % pc.get("name") if pc else "PC を探しています… (PC のアプリが動いているか確認してください)")
@@ -403,6 +420,7 @@ class App(Gtk.Window):
 
     def _ui_offline(self, text):
         self.status = None
+        self.arm.disarm()
         if self.stack.get_visible_child_name() == "pair":
             return False
         self.stack.set_visible_child_name("search")
@@ -419,7 +437,7 @@ class App(Gtk.Window):
     def _ui_status(self, r, pc):
         self.pc = pc
         self.status = r
-        if self.stack.get_visible_child_name() != "main":
+        if self.stack.get_visible_child_name() != "main" and not (self.stack.get_visible_child_name() == "pair" and self.repair):
             self.stack.set_visible_child_name("main")
         self.pc_label.set_text(r.get("name") or "PC")
         running = r.get("steamvr") == "running"

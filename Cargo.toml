@@ -1,6 +1,6 @@
 [package]
 name = "frame-steamvr-remote"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Steam Frame から Windows PC の SteamVR を終了・再起動するトレイ常駐アプリ"
 license = "MIT"

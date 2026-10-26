@@ -32,17 +32,15 @@ PC で先に SteamVR が動いていると、あとから Frame をつなげな�
 curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/install.sh | bash
 ```
 
-入れたあと、Frame の中だけで開けます(次の「Frame だけで開く」を見てください)。
+入れると、SteamVR を起動したとき一緒に起動する「SteamVR リモート」のパネルが、SteamVR のダッシュボードに出ます(次の「Frame だけで開く」)。SteamVR がすでに動いていれば、その場でパネルを起動します(SteamVR は再起動しません)。
 
 ## Frame だけで開く(PC の画面が見えないとき)
 
-Frame と PC の SteamVR がつながっていなくても、Frame の中だけで開いて操作できます(Frame と PC が同じ Wi-Fi/LAN にいれば足ります)。キーボードは要りません。ペアリングのコードも画面のキーパッドで入力できます。開く場所は 3 つあります。
+ヘッドセットの中で、SteamVR のダッシュボードを開くと **「SteamVR リモート」のパネル** があります。コントローラーのレーザーで押します。キーボードは要りません。ペアリングのコードも、パネルのテンキーで入力できます。Frame と PC の SteamVR がつながっていなくても、同じ Wi-Fi/LAN にいれば使えます。
 
-1. **Steam のライブラリ →「SteamVR リモート」**(「非 Steam」のゲームとして出ます)
-2. **SteamVR のダッシュボード → クイックランチ →「SteamVR Remote」** — 一覧の一番後ろに出ることがあります。一度開くと前のほうに出ます。
-3. **デスクトップモードのアプリメニュー →「SteamVR リモート」**
-
-どこにも出ないときは、Frame の Konsole で上の入れかたのコマンドをもう一度実行してください(Steam と SteamVR が動いているときに実行すると、その場で登録されます)。
+- デスクトップモードのアプリメニュー →「SteamVR リモート」でも、同じ操作の画面を開けます。
+- パネルは systemd のユーザーユニット(`frame-steamvr-remote-overlay.service`)で、SteamVR と一緒に自動で起動します。止めるには `systemctl --user disable --now frame-steamvr-remote-overlay.service`。
+- ダッシュボードに出ないときは、Konsole で `systemctl --user status frame-steamvr-remote-overlay.service` を見るか、上の入れかたのコマンドをもう一度実行してください。
 
 ## 使いかた
 
@@ -53,10 +51,12 @@ Frame と PC の SteamVR がつながっていなくても、Frame の中だけ�
 
 ### ふだん
 
-「SteamVR リモート」を開くと PC の名前と SteamVR の状態が出ます。
+ダッシュボードの「SteamVR リモート」を開くと、PC の名前と SteamVR の状態が出ます。
 
 - **SteamVR終了**: PC の SteamVR をていねいに閉じ、閉じなければ SteamVR 関連のプロセスだけを終了します
 - **再起動**: 終了してから SteamVR を起動し直します
+
+**どちらも 2 回押さないと実行されません。** 1 回目でボタンが「もう一度押すと終了(5)」のように変わり、数が減っていきます。5 秒以内にもう一度押すと実行、押さなければ元に戻ります。片方を押したあとにもう片方を押すと、そちらが待機になり、先に押したほうは元に戻ります。
 
 PC でトレイのメニューからも同じ操作ができます。
 
@@ -64,6 +64,7 @@ PC でトレイのメニューからも同じ操作ができます。
 
 ```sh
 frame-steamvr-remote status     # PC と SteamVR の状態
+frame-steamvr-remote overlay    # ダッシュボードのパネルを動かす(ふだんは systemd が起動。2 つめは、いまのパネルを開くよう頼むだけ)
 frame-steamvr-remote quit       # SteamVR を終了
 frame-steamvr-remote restart    # SteamVR を再起動
 frame-steamvr-remote pair 123456
@@ -95,12 +96,13 @@ frame-steamvr-remote forget     # Frame 側のペアリングを忘れる
   ```sh
   curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/install.sh | bash -s -- --uninstall
   ```
-  ファイルは消さずに `~/.local/share/frame-steamvr-remote-uninstalled/` へ移します。Steam のライブラリに追加された「SteamVR リモート」は、ライブラリから自分で削除してください(Steam の項目名は環境で違うので、ここでは書きません)。
+  ファイルは消さずに `~/.local/share/frame-steamvr-remote-uninstalled/` へ移します。パネルの常駐(systemd のユーザーユニット)も止めて、自動起動を外します。0.1.x でライブラリに追加された「SteamVR リモート」が残っている場合は、Steam のライブラリから自分で外してください(Steam の項目名は環境で違うので、ここでは書きません)。
 
 ## うまくいかないとき
 
 - **PC が見つからない**: PC のトレイにアイコンがあるか、Frame と PC が同じネットワークか確認してください。Windows のネットワークの種類が「パブリック」だとファイアウォールで止まります。「プライベート」にしてください。
-- **2 つ開かない**: すでに開いていると、新しく開かずに、その画面を前に出します。
+- **パネルが数秒だけ消えてまた出る**: SteamVR は、`python3` で動く別のツールも同じアプリとして扱うので、そのツールがつないだり切ったりしたときに、パネルが終了の知らせを受けて、5 秒後に systemd が起動し直します。故障ではありません。
+- **2 つ開かない**: パネルは 1 つしか動きません。もう一度開こうとすると、いまのパネルをダッシュボードに出します。
 - **ペアリングできない**: コードは 2 分で切れ、5 回間違えると使えなくなります。もう一度トレイから「Frame とペアリングする」を選んでください。
 - **ペアリングをやり直したい**: Frame の画面の「ペアリングし直す」、または PC のトレイの「ペアリングを解除する」。
 

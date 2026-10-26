@@ -2,7 +2,9 @@
 """Steam Frame から、LAN の Windows PC の SteamVR を終了・再起動する。
 
 使い方:
-  frame-steamvr-remote            ウィンドウを開く(引数なし)
+  frame-steamvr-remote            ウィンドウを開く(引数なし。デスクトップモード用)
+  frame-steamvr-remote overlay    SteamVR のダッシュボードのパネルを動かす(常駐。systemd が SteamVR と一緒に起動する。
+                                  すでに動いているときは、そのパネルをダッシュボードで開くよう頼む)
   frame-steamvr-remote status     PC と SteamVR の状態を表示
   frame-steamvr-remote quit       PC の SteamVR を終了
   frame-steamvr-remote restart    PC の SteamVR を再起動
@@ -82,10 +84,15 @@ def cmd_gui(_):
     return fsr_gui.main()
 
 
+def cmd_overlay(_):
+    import fsr_overlay
+    return fsr_overlay.run()
+
+
 def main(argv):
     core.setup_logging(also_stderr=False)
     cmds = {"discover": cmd_discover, "pair": cmd_pair, "status": cmd_status, "quit": cmd_op("quit"),
-            "restart": cmd_op("restart"), "forget": cmd_forget, "gui": cmd_gui}
+            "restart": cmd_op("restart"), "forget": cmd_forget, "gui": cmd_gui, "overlay": cmd_overlay}
     if len(argv) < 2:
         return cmd_gui([])
     name = argv[1]

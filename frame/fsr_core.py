@@ -323,7 +323,13 @@ def request(ip, port, cmd, timeout=10):
 
 
 def request_with_discovery(cmd, timeout=10):
-    """PC を(必要なら探して)操作を送る。(結果, PC情報) を返す。"""
+    """PC を(必要なら探して)操作を送る。(結果, PC情報) を返す。
+
+    環境変数 FSR_DRY_RUN=1 のときは、quit / restart を PC に送らず、成功したことにする(テストと動作確認用)。
+    """
+    if os.environ.get("FSR_DRY_RUN") == "1" and cmd in ("quit", "restart"):
+        log.warning("FSR_DRY_RUN=1 なので %s は PC に送らない", cmd)
+        return {"t": "result", "ok": True, "detail": "dry-run", "steamvr": "running"}, {"ip": "dry-run"}
     cfg = load_config()
     pc = None
     if cfg.get("pc_ip"):
