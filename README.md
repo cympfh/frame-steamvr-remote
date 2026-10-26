@@ -32,7 +32,17 @@ PC で先に SteamVR が動いていると、あとから Frame をつなげな�
 curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/install.sh | bash
 ```
 
-「SteamVR リモート」がメニューと、SteamVR のクイックランチ(次に SteamVR を起動したとき)に出ます。
+入れたあと、Frame の中だけで開けます(次の「Frame だけで開く」を見てください)。
+
+## Frame だけで開く(PC の画面が見えないとき)
+
+Frame と PC の SteamVR がつながっていなくても、Frame の中だけで開いて操作できます(Frame と PC が同じ Wi-Fi/LAN にいれば足ります)。キーボードは要りません。ペアリングのコードも画面のキーパッドで入力できます。開く場所は 3 つあります。
+
+1. **Steam のライブラリ →「SteamVR リモート」**(「非 Steam」のゲームとして出ます)
+2. **SteamVR のダッシュボード → クイックランチ →「SteamVR Remote」** — 一覧の一番後ろに出ることがあります。一度開くと前のほうに出ます。
+3. **デスクトップモードのアプリメニュー →「SteamVR リモート」**
+
+どこにも出ないときは、Frame の Konsole で上の入れかたのコマンドをもう一度実行してください(Steam と SteamVR が動いているときに実行すると、その場で登録されます)。
 
 ## 使いかた
 
@@ -85,11 +95,12 @@ frame-steamvr-remote forget     # Frame 側のペアリングを忘れる
   ```sh
   curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/install.sh | bash -s -- --uninstall
   ```
-  ファイルは消さずに `~/.local/share/frame-steamvr-remote-uninstalled/` へ移します。
+  ファイルは消さずに `~/.local/share/frame-steamvr-remote-uninstalled/` へ移します。Steam のライブラリに追加された「SteamVR リモート」は、ライブラリから自分で削除してください(Steam の項目名は環境で違うので、ここでは書きません)。
 
 ## うまくいかないとき
 
 - **PC が見つからない**: PC のトレイにアイコンがあるか、Frame と PC が同じネットワークか確認してください。Windows のネットワークの種類が「パブリック」だとファイアウォールで止まります。「プライベート」にしてください。
+- **2 つ開かない**: すでに開いていると、新しく開かずに、その画面を前に出します。
 - **ペアリングできない**: コードは 2 分で切れ、5 回間違えると使えなくなります。もう一度トレイから「Frame とペアリングする」を選んでください。
 - **ペアリングをやり直したい**: Frame の画面の「ペアリングし直す」、または PC のトレイの「ペアリングを解除する」。
 

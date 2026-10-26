@@ -1,5 +1,7 @@
 """frame-steamvr-remote の画面(GTK3)。SteamVR の中のデスクトップでも押しやすい大きさにしてある。"""
+import fcntl
 import os
+import signal
 import sys
 import threading
 import time
@@ -35,10 +37,13 @@ label { color: #ffffff; }
 .armed { background-image: linear-gradient(to bottom, #FFB84D, #E07B00); color: #2b1600; }
 .small { font-size: 26px; color: #ffffff; border: none; border-radius: 24px; min-height: 64px; padding: 4px 28px;
          background-image: none; background-color: rgba(255,255,255,0.16); text-shadow: none; box-shadow: none; }
-.key { font-size: 48px; font-weight: bold; color: #ffffff; border: none; border-radius: 24px; min-width: 130px; min-height: 104px;
+.key { font-size: 48px; font-weight: bold; color: #ffffff; border: none; border-radius: 24px; min-width: 150px; min-height: 80px;
        background-image: none; background-color: rgba(255,255,255,0.16); text-shadow: none; box-shadow: none; }
 .keysm { font-size: 30px; }
 .key:active { background-color: #7C5CFF; }
+.closebtn { font-size: 30px; font-weight: bold; color: #ffffff; border: none; border-radius: 28px; min-height: 76px; min-width: 190px;
+            background-image: none; background-color: rgba(255,255,255,0.20); text-shadow: none; box-shadow: none; }
+.foot { font-size: 22px; color: #a39ccf; }
 .code { font-size: 78px; font-weight: bold; letter-spacing: 14px; color: #2BD9C4; }
 """
 
@@ -54,10 +59,13 @@ def _label(text, cls, wrap=False, xalign=0.5):
     return l
 
 
+STANDALONE_NOTE = "Frame と PC の SteamVR がつながっていなくても使えます(同じ Wi-Fi/LAN にいれば足ります)。"
+
+
 class App(Gtk.Window):
     def __init__(self):
         super().__init__(title="SteamVR リモート")
-        self.set_default_size(1280, 900)
+        self.set_default_size(1500, 1000)
         self.set_position(Gtk.WindowPosition.CENTER)
         try:
             self.set_icon_from_file(LOGO)
@@ -74,14 +82,19 @@ class App(Gtk.Window):
 
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_vhomogeneous(False)  # キーパッドのページに合わせて、ほかのページまで縦に伸ばさない
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        outer.set_border_width(40)
+        outer.set_border_width(28)
         outer.pack_start(self._header(), False, False, 0)
         outer.pack_start(self.stack, True, True, 0)
         self.msg = _label("", "msg", wrap=True)
         outer.pack_end(self.msg, False, False, 0)
         self.content = outer
-        self.add(outer)
+        # 画面に収まらないときは縦にスクロールできる(コントローラーでドラッグ)。普通は収まる。
+        sw = Gtk.ScrolledWindow()
+        sw.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        sw.add(outer)
+        self.add(sw)
         self.stack.add_named(self._page_search(), "search")
         self.stack.add_named(self._page_main(), "main")
         self.stack.add_named(self._page_pair(), "pair")
@@ -101,6 +114,11 @@ class App(Gtk.Window):
         col.pack_start(_label("SteamVR リモート", "title", xalign=0), False, False, 0)
         col.pack_start(_label("PC の SteamVR を Frame から止める・つなぎ直す", "sub", xalign=0), False, False, 0)
         box.pack_start(col, True, True, 0)
+        close = Gtk.Button(label="閉じる")
+        close.get_style_context().add_class("closebtn")
+        close.set_valign(Gtk.Align.CENTER)
+        close.connect("clicked", lambda *_: self.destroy())
+        box.pack_end(close, False, False, 0)
         return box
 
     def _page_search(self):
@@ -110,6 +128,9 @@ class App(Gtk.Window):
         box.pack_start(self.search_label, False, False, 0)
         self.search_hint = _label("", "hint", wrap=True)
         box.pack_start(self.search_hint, False, False, 0)
+        self.search_last = _label("", "sub", wrap=True)
+        box.pack_start(self.search_last, False, False, 0)
+        box.pack_start(_label(STANDALONE_NOTE, "foot", wrap=True), False, False, 0)
         btn = Gtk.Button(label="もう一度探す")
         btn.get_style_context().add_class("small")
         btn.set_halign(Gtk.Align.CENTER)
@@ -127,6 +148,7 @@ class App(Gtk.Window):
         for w in (self.pc_label, self.state_label, self.note_label):
             card.pack_start(w, False, False, 0)
         box.pack_start(card, False, False, 0)
+        box.pack_start(_label("押すのは PC の SteamVR です。「再起動」は、止めてから起動し直します(1 分ほどかかります)。", "hint", wrap=True), False, False, 0)
         row = Gtk.Box(spacing=30, homogeneous=True)
         self.btn_quit = Gtk.Button(label="SteamVR終了")
         self.btn_quit.get_style_context().add_class("bigbtn")
@@ -144,11 +166,12 @@ class App(Gtk.Window):
         again.get_style_context().add_class("small")
         again.connect("clicked", lambda *_: self._show_pair())
         foot.pack_end(again, False, False, 0)
+        foot.pack_start(_label(STANDALONE_NOTE, "foot", wrap=True, xalign=0), True, True, 0)
         box.pack_end(foot, False, False, 0)
         return box
 
     def _page_pair(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.pair_hint = _label(
             "PC のタスクトレイの SteamVR リモートのアイコンを右クリックして、\n「Frame とペアリングする」を選び、出てきた 6 桁のコードを入力してください。",
             "hint", wrap=True)
@@ -157,7 +180,7 @@ class App(Gtk.Window):
         box.pack_start(self.pair_pc, False, False, 0)
         self.code_label = _label("", "code")
         box.pack_start(self.code_label, False, False, 6)
-        grid = Gtk.Grid(column_spacing=18, row_spacing=14)
+        grid = Gtk.Grid(column_spacing=18, row_spacing=10)
         grid.set_halign(Gtk.Align.CENTER)
         keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "消す", "0", "全消し"]
         for i, k in enumerate(keys):
@@ -384,7 +407,12 @@ class App(Gtk.Window):
             return False
         self.stack.set_visible_child_name("search")
         self.search_label.set_text("PC につながりません")
-        self.search_hint.set_text(text)
+        self.search_hint.set_text(text + "\n確認すること: PC の電源 / PC のトレイに SteamVR リモートのアイコンがあるか / Frame と PC が同じ Wi-Fi か")
+        cfg = core.load_config()
+        if cfg.get("pc_name"):
+            self.search_last.set_text("前につながった PC: %s (%s)" % (cfg.get("pc_name"), cfg.get("pc_ip", "?")))
+        else:
+            self.search_last.set_text("")
         self._refresh_buttons()
         return False
 
@@ -407,10 +435,41 @@ def install_css():
     Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
+def _single_instance():
+    """すでに開いていれば、その画面を前に出して True を返す(2 つ目は開かない)。"""
+    os.makedirs(core.STATE_DIR, exist_ok=True)
+    path = os.path.join(core.STATE_DIR, "gui.lock")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            pid = int(os.pread(fd, 32, 0).decode().strip() or 0)
+            if pid > 1:
+                os.kill(pid, signal.SIGUSR1)
+                core.log.info("すでに開いている画面(pid %s)を前に出した", pid)
+        except (OSError, ValueError):
+            pass
+        os.close(fd)
+        return True, None
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, str(os.getpid()).encode(), 0)
+    return False, fd  # fd は開いたままにしておく(閉じるとロックが外れる)
+
+
 def main():
+    already, _fd = _single_instance()
+    if already:
+        return 0
+    GLib.set_prgname("frame-steamvr-remote")
+    GLib.set_application_name("SteamVR リモート")
     install_css()
     app = App()
     app.show_all()
+    app.maximize()
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, lambda: (app.present(), True)[1])
     app.start()
+    core.log.info("画面を開いた")
     Gtk.main()
+    core.log.info("画面を閉じた")
     return 0

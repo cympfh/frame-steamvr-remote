@@ -20,9 +20,9 @@ def shot(app_state, path):
     fsr_gui.install_css()
     app = fsr_gui.App()
     content = app.content
-    app.remove(content)
+    content.get_parent().remove(content)
     off = Gtk.OffscreenWindow()
-    off.set_default_size(1280, 900)
+    off.set_default_size(1500, 960)
     off.add(content)
     off.show_all()
     app.stack.set_transition_type(Gtk.StackTransitionType.NONE)
