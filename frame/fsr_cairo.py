@@ -217,8 +217,8 @@ class Canvas:
         c.cairo_restore(cr)
 
     # ---- 出力
-    def rgba_bytes(self):
-        """OpenVR に渡す RGBA(上の行から、隙間なし)の bytearray。全面を不透明で塗っておくこと(premultiplied を気にしないため)。"""
+    def _raw(self):
+        """cairo の画像データ(ARGB32 = リトルエンディアンでは B,G,R,A の順・隙間なし)の bytearray。"""
         c = self.c
         c.cairo_surface_flush(self.surf)
         stride = c.cairo_image_surface_get_stride(self.surf)
@@ -227,9 +227,30 @@ class Canvas:
         if stride != self.w * 4:
             rows = [raw[r * stride:r * stride + self.w * 4] for r in range(self.h)]
             raw = bytearray(b"".join(rows))
+        return raw
+
+    def rgba_bytes(self):
+        """OpenVR に渡す RGBA(上の行から、隙間なし)の bytearray。全面を不透明で塗っておくこと(premultiplied を気にしないため)。"""
+        raw = self._raw()
         # cairo の ARGB32(リトルエンディアンでは B,G,R,A の順)→ RGBA
         raw[0::4], raw[2::4] = raw[2::4], raw[0::4]
         return raw
+
+    def rgba_solid(self, color):
+        """単色(color)だけで描いた半透明の図形・文字を、OpenVR に渡せる RGBA(色は color のまま、透明度だけ変わる)にする。
+
+        cairo の画像は「色×透明度」を掛けた形(premultiplied)なので、そのまま渡すと縁が黒ずむ。
+        単色なら、透明度(A)だけ取り出して、色は全部の画素で color にすればよい。
+        """
+        a = self._raw()[3::4]
+        r, g, b, _ = hexcolor(color)
+        n = len(a)
+        out = bytearray(n * 4)
+        out[0::4] = bytes([round(r * 255)]) * n
+        out[1::4] = bytes([round(g * 255)]) * n
+        out[2::4] = bytes([round(b * 255)]) * n
+        out[3::4] = a
+        return out
 
     def save_png(self, path):
         self.c.cairo_surface_flush(self.surf)

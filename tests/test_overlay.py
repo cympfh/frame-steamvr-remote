@@ -222,76 +222,55 @@ class UploadGateTest(unittest.TestCase):
         self.assertFalse(self.panel.needs_draw())  # 見た目が同じだと分かったら、もう描き直さない
         self.assertEqual(self.run_for(5), 0)
 
-    def test_hover_jitter_at_a_button_edge_uploads_nothing(self):
+    def test_hover_never_uploads_the_full_image(self):
+        """境目をカーソルで行き来しても、全体の画像は 1 枚も送らない(色は SteamVR 側の重ね画像が受け持つ)。"""
         qx, qy = self.center("quit")
-        # 境目を 20 回/秒で行き来する(手ぶれ)。どこにも落ち着かない
+        rx, ry = self.center("restart")
         n = 0
-        for i in range(60):
-            self.clock.advance(0.05)
-            self.panel.on_mouse("move", qx, qy) if i % 2 == 0 else self.panel.on_mouse("move", -5, -5)
+        for i in range(400):
+            self.clock.advance(0.016)
+            x, y = [(qx, qy), (rx, ry), (-5, -5), (qx + 300, qy), (rx - 300, ry)][i % 5]
+            self.panel.on_mouse("move", x, y)
             if self.pump() is not None:
                 n += 1
         self.assertEqual(n, 0)
+        self.assertEqual(self.panel.counts["upload"], 1)
+        self.assertEqual(self.panel.counts["same"], 0)  # 描き直しすらしない
 
-    def test_hover_that_settles_uploads_once(self):
+    def test_press_and_release_do_not_upload_in_layered_mode(self):
         qx, qy = self.center("quit")
         self.clock.advance(1)
         self.panel.on_mouse("move", qx, qy)
-        self.assertEqual(self.run_for(2), 1)
-        self.assertEqual(self.run_for(5), 0)
-        # マウスが動き続けても、同じボタンの上なら送らない
-        for _ in range(100):
-            self.clock.advance(0.016)
-            self.panel.on_mouse("move", qx + 1, qy + 1)
-            self.assertIsNone(self.pump())
-
-    def test_hover_on_disabled_button_changes_nothing(self):
-        self.ctrl.status = None  # PC が見えない(ボタンが押せない)
-        self.ctrl.view = "search"
-        self.ctrl._changed()
-        self.clock.advance(1)
-        self.assertEqual(self.run_for(1), 1)
-        self.panel.on_mouse("move", 5, 5)
-        self.panel.on_mouse("leave", -1, -1)
-        self.assertEqual(self.run_for(3), 0)
+        self.panel.on_mouse("down", qx, qy)
+        self.assertEqual(self.run_for(1), 0)
+        self.panel.on_mouse("leave", -1, -1)  # 押したまま外れる
+        self.assertEqual(self.run_for(1), 0)
 
     def test_uploads_are_at_least_min_interval_apart(self):
-        qx, qy = self.center("quit")
-        rx, ry = self.center("restart")
-        t = 0
-        for i in range(200):  # 押す・離すを速く繰り返す
+        # 本当に中身が変わるとき(PC の状態が行き来する)でも、送る間隔は 0.25 秒以上
+        for i in range(60):
             self.clock.advance(0.02)
-            self.panel.on_mouse("move", qx if i % 2 else rx, qy if i % 2 else ry)
-            self.panel.on_mouse("down", qx if i % 2 else rx, qy if i % 2 else ry)
+            self.ctrl.status = dict(self.ctrl.status, steamvr="stopped" if i % 2 else "running")
+            self.ctrl._changed()
             self.pump()
-            self.panel.on_mouse("leave", -1, -1)
-            self.pump()
-            t += 1
         times = [t for t, _ in self.frames]
+        self.assertGreater(len(times), 2)
         gaps = [b - a for a, b in zip(times, times[1:])]
         self.assertTrue(all(g >= 0.25 - 1e-9 for g in gaps), min(gaps))
 
-    def test_arm_countdown_uploads_once_per_second(self):
+    def test_arm_countdown_does_not_upload_the_full_image_each_second(self):
         qx, qy = self.center("quit")
         self.clock.advance(1)
         self.panel.on_mouse("move", qx, qy)
-        self.run_for(1)  # ホバーの画像
         self.panel.on_mouse("down", qx, qy)
-        self.run_for(0.5)  # 押した画像
         self.assertEqual(self.panel.on_mouse("up", qx, qy), arm.ARMED)
-        before = len(self.frames)
-        self.run_for(0.5)
-        self.assertEqual(len(self.frames) - before, 1)  # 「もう一度押すと終了(5)」の画像
+        # 待機の見た目(橙色のボタンとメッセージ)に変わるときの 1 回だけ
+        self.assertEqual(self.run_for(0.6), 1)
         t_arm = self.clock()
-        mark = len(self.frames)
-        n = self.run_for(6)  # 5 秒たつと待機が外れる
-        # 数字が 4,3,2,1 と進み、最後に待機が外れて元の文字に戻る = 5 枚。1 秒に 1 枚
-        self.assertEqual(n, 5)
-        times = [t for t, _ in self.frames[mark:]]
-        gaps = [b - a for a, b in zip(times, times[1:])]
-        self.assertTrue(all(0.95 <= g <= 1.1 for g in gaps), gaps)
-        self.assertLess(times[0] - t_arm, 1.1)
+        n = self.run_for(6)   # 数字が 4,3,2,1 と進む間は送らない。5 秒たって待機が外れるとき(元の見た目に戻る)に 1 回
+        self.assertEqual(n, 1)
         self.assertEqual(self.run_for(10), 0)  # そのあとは静か
+        self.assertGreater(self.clock() - t_arm, 5)
 
     def test_stats_line(self):
         self.assertIsNone(self.panel.stats_line())
@@ -304,6 +283,273 @@ class UploadGateTest(unittest.TestCase):
         self.clock.advance(61)
         self.panel.vis_seconds = 30
         self.assertIn("0 回", self.panel.stats_line())  # 見えているのに 0 回、は書く(待機中の確認ができる)
+
+
+class FakeOverlay:
+    """OpenVR の代わり。呼ばれたことを記録する(SteamVR には何もしない)。"""
+
+    version = "IVROverlay_028"
+    has_alpha = True
+
+    def __init__(self, subview=True, show_ok=True):
+        self.has_subview = subview
+        self.show_ok = show_ok
+        self.next = 100
+        self.raw = []           # (handle, 幅, 高さ)
+        self.pos = {}
+        self.visible = set()
+        self.alpha = {}
+        self.destroyed = []
+        self.calls = {"show": 0, "hide": 0, "move": 0}
+
+    def create_subview(self, parent, key, name):
+        if not self.has_subview:
+            raise vr.OpenVRError("CreateSubviewOverlay が使えません")
+        self.next += 1
+        return self.next
+
+    def set_raw(self, h, buf, w, hh):
+        assert len(buf) == w * hh * 4
+        self.raw.append((h, w, hh))
+
+    def set_subview_position(self, h, x, y):
+        self.pos[h] = (x, y)
+        self.calls["move"] += 1
+
+    def show(self, h):
+        if not self.show_ok:
+            raise vr.OpenVRError("ShowOverlay: 失敗")
+        self.visible.add(h)
+        self.calls["show"] += 1
+
+    def hide(self, h):
+        if not self.show_ok:
+            raise vr.OpenVRError("HideOverlay: 失敗")
+        self.visible.discard(h)
+        self.calls["hide"] += 1
+
+    def set_alpha(self, h, a):
+        self.alpha[h] = a
+        (self.visible.add if a > 0 else self.visible.discard)(h)
+
+    def destroy(self, h):
+        self.destroyed.append(h)
+
+
+@unittest.skipUnless(HAVE_CAIRO, "libcairo が無い")
+class LayersTest(unittest.TestCase):
+    """ちらつき対策の本体: 指す・押す・数字が減る、で全体の画像も重ね画像の中身も送らない。"""
+
+    MAIN = 7
+
+    def setUp(self):
+        self.clock = Clock()
+        self.core = FakeCore()
+        self.ctrl = model.Controller(core_mod=self.core, clock=self.clock, run_async=False)
+        self.ctrl.refresh_once()
+        self.fake = FakeOverlay()
+        self.layers = ov.Layers(self.fake, self.MAIN, clock=self.clock)
+        self.assertIsNone(self.layers.probe())
+        self.fake.raw.clear()
+        self.panel = ov.Panel(self.ctrl, clock=self.clock)
+        self.fulls = 0
+        self.step(0.0)
+
+    def step(self, dt=0.016):
+        """run() の 1 周と同じ流れ。"""
+        self.clock.advance(dt)
+        self.ctrl.tick()
+        frame = self.panel.next_frame()
+        if frame is not None:
+            self.fake.set_raw(self.MAIN, frame, ov.W, ov.H)
+            self.fulls += 1
+            self.layers.prepare(self.panel.buttons)
+        self.layers.sync(self.panel, self.clock())
+
+    def run_for(self, seconds, dt=0.016):
+        end = self.clock() + seconds
+        while self.clock() < end:
+            self.step(dt)
+
+    def center(self, ident):
+        b = {b.id: b for b in self.panel.buttons}[ident]
+        return b.x + b.w / 2, b.y + b.h / 2
+
+    def small_images(self):
+        return [r for r in self.fake.raw if r[0] != self.MAIN]
+
+    def test_probe_leaves_nothing_visible(self):
+        self.assertEqual(self.fake.visible, set())
+        self.assertEqual(len(self.fake.destroyed), 1)
+
+    def test_first_frame_prepares_highlights_hidden(self):
+        self.assertEqual(self.fulls, 1)
+        self.assertGreaterEqual(len(self.small_images()), 2)   # 指す色・押す色
+        self.assertEqual(self.fake.visible, set())
+        self.assertNotIn(self.MAIN, [h for h, _, _ in self.small_images()])
+
+    def test_hover_crossing_borders_uploads_nothing(self):
+        qx, qy = self.center("quit")
+        rx, ry = self.center("restart")
+        raw_before = len(self.fake.raw)
+        for i in range(500):
+            x, y = [(qx, qy), (rx, ry), (-5, -5), (qx + 300, qy), (rx - 300, ry)][i % 5]
+            self.panel.on_mouse("move", x, y)
+            self.step()
+        self.assertEqual(self.fulls, 1)
+        self.assertEqual(len(self.fake.raw) - raw_before, 0)   # 全体の画像も、重ね画像の中身も 0 枚
+        self.assertGreater(self.fake.calls["show"], 100)          # 出し入れと位置の変更だけ
+
+    def test_hover_shows_one_highlight_at_the_button(self):
+        qx, qy = self.center("quit")
+        b = {b.id: b for b in self.panel.buttons}["quit"]
+        self.panel.on_mouse("move", qx, qy)
+        self.step()
+        self.assertEqual(len(self.fake.visible), 1)
+        h = next(iter(self.fake.visible))
+        self.assertEqual(self.fake.pos[h], (b.x, b.y))
+        raw = {r[0]: r for r in self.fake.raw}[h]
+        self.assertEqual(raw[1:], (b.w, b.h))
+        rx, ry = self.center("restart")
+        self.panel.on_mouse("move", rx, ry)
+        self.step()
+        self.assertEqual(len(self.fake.visible), 1)   # 前のは隠れて、新しいほうだけ
+        self.assertEqual(self.fake.pos[next(iter(self.fake.visible))][0], {b.id: b for b in self.panel.buttons}["restart"].x)
+        self.panel.on_mouse("move", -5, -5)
+        self.step()
+        self.assertEqual(self.fake.visible, set())
+
+    def test_press_shows_press_color_and_release_hides_it(self):
+        qx, qy = self.center("quit")
+        self.panel.on_mouse("move", qx, qy)
+        self.step()
+        self.panel.on_mouse("down", qx, qy)
+        self.step()
+        self.assertEqual(len(self.fake.visible), 2)   # 指す色 + 押す色
+        self.panel.on_mouse("up", qx, qy)
+        self.run_for(0.6)
+        self.assertEqual(self.fulls, 2)   # 全体の画像は、待機の見た目に変わった 1 回だけ
+
+    def test_disabled_button_gets_no_highlight(self):
+        self.ctrl.status = None
+        self.ctrl.view = "search"
+        self.ctrl._changed()
+        self.run_for(1)
+        raw = len(self.fake.raw)
+        self.panel.on_mouse("move", 5, 5)
+        self.step()
+        qx, qy = self.center("retry")
+        self.panel.on_mouse("move", qx, qy)
+        self.step()
+        self.assertEqual(len(self.fake.visible), 1)
+        self.assertEqual(len(self.fake.raw), raw)
+
+    def test_armed_label_countdown_swaps_buffers_without_a_full_upload(self):
+        qx, qy = self.center("quit")
+        self.panel.on_mouse("move", qx, qy)
+        self.panel.on_mouse("down", qx, qy)
+        self.assertEqual(self.panel.on_mouse("up", qx, qy), arm.ARMED)
+        self.run_for(0.6)
+        self.assertEqual(self.fulls, 2)
+        self.assertIn("(5)", self.layers.visible_label("quit"))
+        seen = [self.layers.visible_label("quit")]
+        t_end = self.clock() + 4.3
+        while self.clock() < t_end:
+            self.step()
+            lab = self.layers.labels["quit"]
+            # 文字は途切れない: 出ているのが少なくとも 1 枚ある
+            shown = [h for h in lab["bufs"] if h in self.fake.visible]
+            self.assertGreaterEqual(len(shown), 1, self.clock())
+            if self.layers.visible_label("quit") != seen[-1]:
+                seen.append(self.layers.visible_label("quit"))
+        self.assertEqual([t[-3:] for t in seen], ["(5)", "(4)", "(3)", "(2)", "(1)"])
+        self.assertEqual(self.fulls, 2)   # 数字が進んでも全体の画像は送らない
+        # 待機が外れたら、文字は消えて、全体の画像が 1 回だけ元に戻る
+        self.run_for(2)
+        self.assertEqual(self.fulls, 3)
+        self.assertIsNone(self.layers.visible_label("quit"))
+        self.assertTrue(all(h not in self.fake.visible for h in self.layers.labels["quit"]["bufs"] if h))
+
+    def test_label_is_only_the_two_buffers_per_button(self):
+        qx, qy = self.center("quit")
+        self.panel.on_mouse("down", qx, qy)
+        self.panel.on_mouse("up", qx, qy)
+        self.run_for(6)
+        self.assertEqual(len([h for h in self.layers.labels["quit"]["bufs"] if h]), 2)
+
+    def test_show_hide_falls_back_to_alpha_when_unsupported(self):
+        fake = FakeOverlay(show_ok=False)
+        layers = ov.Layers(fake, self.MAIN, clock=self.clock)
+        layers.prepare(self.panel.buttons)
+        qx, qy = self.center("quit")
+        self.panel.on_mouse("move", qx, qy)
+        layers.sync(self.panel, self.clock())
+        self.assertTrue(layers.by_alpha)
+        self.assertEqual(len(fake.visible), 1)
+        self.panel.on_mouse("move", -5, -5)
+        layers.sync(self.panel, self.clock())
+        self.assertEqual(fake.visible, set())
+
+    def test_probe_reports_why_subviews_are_unusable(self):
+        old = ov.Layers(FakeOverlay(subview=False), self.MAIN)
+        self.assertIn("サブビュー", old.probe())
+        bad = ov.Layers(FakeOverlay(), self.MAIN)
+        bad.ov.create_subview = lambda *a: (_ for _ in ()).throw(vr.OpenVRError("CreateSubviewOverlay: 親が違う"))
+        self.assertIn("CreateSubviewOverlay", bad.probe())
+
+    def test_legacy_mode_draws_pressed_in_the_base_but_never_hover(self):
+        panel = ov.Panel(self.ctrl, clock=self.clock, layered=False)
+        self.clock.advance(1)
+        self.assertIsNotNone(panel.next_frame())
+        b = {b.id: b for b in panel.buttons}["quit"]
+        panel.on_mouse("move", b.x + 5, b.y + 5)
+        self.clock.advance(1)
+        self.assertIsNone(panel.next_frame())      # 指すだけでは送らない
+        panel.on_mouse("down", b.x + 5, b.y + 5)
+        self.clock.advance(1)
+        self.assertIsNotNone(panel.next_frame())   # 押している間だけは全体の画像に描く
+        self.assertEqual(panel.highlights(), {})
+        self.assertEqual(panel.label_specs(), {})
+
+    def test_highlight_image_is_a_straight_alpha_single_colour(self):
+        key = (640, 280, 44, "#ffffff", 0.18)
+        raw = ov.highlight_rgba(key)
+        self.assertEqual(len(raw), 640 * 280 * 4)
+        mid = (140 * 640 + 320) * 4
+        self.assertEqual(tuple(raw[mid:mid + 3]), (255, 255, 255))
+        self.assertAlmostEqual(raw[mid + 3], 0.18 * 255, delta=2)
+        self.assertEqual(raw[3], 0)   # 角は透明
+        dark = ov.highlight_rgba((640, 280, 44, "#000000", 0.22))
+        self.assertEqual(tuple(dark[mid:mid + 3]), (0, 0, 0))
+
+    def test_label_image_has_text_pixels_only_in_the_fg_colour(self):
+        spec = {"x": 0, "y": 0, "w": 640, "h": 100, "fg": "#2b1600", "size": 50, "baseline": 68}
+        raw = ov.label_rgba(spec, "もう一度押すと終了(5)")
+        self.assertEqual(len(raw), 640 * 100 * 4)
+        self.assertEqual(raw[3], 0)
+        self.assertTrue(any(raw[i + 3] > 200 for i in range(0, len(raw), 4)))
+        self.assertTrue(all(tuple(raw[i:i + 3]) == (0x2b, 0x16, 0x00) for i in range(0, len(raw), 4)))
+
+
+class InitErrorTest(unittest.TestCase):
+    """0.2.1 までは、SteamVR の起動直後にパネルが SEGV で何度も落ちた(VR_GetVRInitErrorAsSymbol が悪いポインタを返す)。"""
+
+    def test_init_error_names_never_touch_the_runtime(self):
+        class Boom:
+            def __getattr__(self, name):
+                raise AssertionError("ランタイムの %s は呼ばない" % name)
+
+        o = vr.Overlay.__new__(vr.Overlay)
+        o.lib = Boom()
+        self.assertIn("IPC_ConnectFailed", o._sym(301))
+        self.assertEqual(o._sym(99999), "VRInitError 99999")
+
+    def test_source_does_not_call_the_crashing_function(self):
+        import inspect
+        src = inspect.getsource(vr)
+        for line in src.splitlines():
+            if "VR_GetVRInitErrorAsSymbol" in line:
+                self.assertTrue(line.strip().startswith(("#", "libopenvr_api の")), line)
 
 
 if __name__ == "__main__":

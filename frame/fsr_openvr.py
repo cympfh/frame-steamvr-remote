@@ -75,6 +75,17 @@ EV_DASHBOARD_DEACTIVATED = 503
 EV_QUIT = 700
 EV_PROCESS_QUIT = 701
 
+# VR_Init が返すエラーのうち、SteamVR が起動していない・起動途中のときに出るもの(openvr.h の EVRInitError)
+INIT_ERRORS = {
+    1: "VRInitError_Unknown", 109: "VRInitError_Init_NotInitialized", 119: "VRInitError_Init_ShuttingDown",
+    121: "VRInitError_Init_NoServerForBackgroundApp", 124: "VRInitError_Init_Internal",
+    300: "VRInitError_IPC_ServerInitFailed", 301: "VRInitError_IPC_ConnectFailed",
+    302: "VRInitError_IPC_SharedStateInitFailed", 303: "VRInitError_IPC_CompositorInitFailed",
+    305: "VRInitError_IPC_Failed", 306: "VRInitError_IPC_CompositorConnectFailed",
+    308: "VRInitError_IPC_ConnectFailedAfterMultipleAttempts", 309: "VRInitError_IPC_ConnectFailedAfterTargetExited",
+    403: "VRInitError_Compositor_OverlayInitFailed",
+}
+
 APP_OVERLAY = 2          # VRApplication_Overlay
 INPUT_MOUSE = 1          # VROverlayInputMethod_Mouse
 FLAG_ENABLE_CLICK_STABILIZATION = 1 << 27
@@ -123,16 +134,19 @@ class Overlay:
         self.lib.VR_InitInternal.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
         self.lib.VR_GetGenericInterface.restype = ctypes.c_void_p
         self.lib.VR_GetGenericInterface.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]
-        self.lib.VR_GetVRInitErrorAsSymbol.restype = ctypes.c_char_p
-        self.lib.VR_GetVRInitErrorAsSymbol.argtypes = [ctypes.c_int]
         self.inited = False
         self.fn = None
         self.order = FN_ORDER
         self.version = None
 
     def _sym(self, err):
-        s = self.lib.VR_GetVRInitErrorAsSymbol(err)
-        return s.decode() if s else str(err)
+        """VR_Init のエラー番号を、読める名前にする。
+
+        libopenvr_api の VR_GetVRInitErrorAsSymbol は、SteamVR が起動途中でつなぎに失敗した直後に呼ぶと、
+        解放済みの文字列を指して SEGV することがある(0.2.1 までは SteamVR の起動直後にパネルが何度も落ちていた原因)。
+        そのため呼ばずに、自分で持っている表だけで名前にする。
+        """
+        return INIT_ERRORS.get(err, "VRInitError %d" % err)
 
     def init(self):
         err = ctypes.c_int(0)
@@ -196,12 +210,25 @@ class Overlay:
             "ShowDashboard": (None, [t.c_char_p]),
             "GetOverlayErrorNameFromEnum": (t.c_void_p, [E]),
         }
+        # 無くても動く関数(IVROverlay_028 にだけある・古い SteamVR に無いかもしれないもの)
+        optional = {
+            "CreateSubviewOverlay": (E, [H, t.c_char_p, t.c_char_p, t.POINTER(H)]),
+            "SetSubviewPosition": (E, [H, t.c_float, t.c_float]),
+            "ShowOverlay": (E, [H]),
+            "HideOverlay": (E, [H]),
+            "SetOverlayAlpha": (E, [H, t.c_float]),
+        }
         self._f = {}
         for name, (res, args) in sigs.items():
             addr = self.fn[self.order.index(name)]
             if not addr:
                 raise OpenVRError("IVROverlay の関数 %s がありません" % name)
             self._f[name] = t.CFUNCTYPE(res, *args)(addr)
+        for name, (res, args) in optional.items():
+            if name in self.order:
+                addr = self.fn[self.order.index(name)]
+                if addr:
+                    self._f[name] = t.CFUNCTYPE(res, *args)(addr)
 
     def err_name(self, e):
         ptr = self._f["GetOverlayErrorNameFromEnum"](e)
@@ -242,6 +269,36 @@ class Overlay:
             raise ValueError("画像のサイズが合いません")
         arr = (ctypes.c_char * len(buf)).from_buffer(buf) if isinstance(buf, bytearray) else ctypes.c_char_p(bytes(buf))
         self._check("SetOverlayRaw", self._f["SetOverlayRaw"](handle, ctypes.cast(arr, ctypes.c_void_p), w, h, 4))
+
+    @property
+    def has_subview(self):
+        """「親のオーバーレイの上に小さな画像を重ねる」サブビューが使えるか(IVROverlay_028 以上)。"""
+        return all(n in self._f for n in ("CreateSubviewOverlay", "SetSubviewPosition", "ShowOverlay", "HideOverlay"))
+
+    @property
+    def has_alpha(self):
+        return "SetOverlayAlpha" in self._f
+
+    def create_subview(self, parent, key, name):
+        """親(同じプロセスのオーバーレイ)の上に重ねる小さな画像のオーバーレイを作る。座標は親の画像の px。"""
+        if "CreateSubviewOverlay" not in self._f:
+            raise OpenVRError("CreateSubviewOverlay が使えません(%s)" % self.version)
+        h = ctypes.c_uint64(0)
+        e = self._f["CreateSubviewOverlay"](parent, key.encode(), name.encode(), ctypes.byref(h))
+        self._check("CreateSubviewOverlay", e)
+        return h.value
+
+    def set_subview_position(self, handle, x, y):
+        self._check("SetSubviewPosition", self._f["SetSubviewPosition"](handle, float(x), float(y)))
+
+    def show(self, handle):
+        self._check("ShowOverlay", self._f["ShowOverlay"](handle))
+
+    def hide(self, handle):
+        self._check("HideOverlay", self._f["HideOverlay"](handle))
+
+    def set_alpha(self, handle, a):
+        self._check("SetOverlayAlpha", self._f["SetOverlayAlpha"](handle, float(a)))
 
     def set_from_file(self, handle, path):
         return self._f["SetOverlayFromFile"](handle, path.encode())
