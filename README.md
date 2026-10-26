@@ -91,14 +91,14 @@ frame-steamvr-remote forget     # Frame 側のペアリングを忘れる
 
 ログは大きくなると自動で入れ替わります。合言葉とペアリングコードはログに書きません。
 
-## 外しかた
+## アンインストール方法
 
-- **PC**: トレイのメニューで「Windows の起動時に自動で起動する」をオフにして「終了」し、exe を消します。
+- **PC**: トレイのメニューで「Windows の起動時に自動で起動する」をオフにして「終了」し、exe ファイルを消します。
 - **Frame**: 
   ```sh
   curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/install.sh | bash -s -- --uninstall
   ```
-  ファイルは消さずに `~/.local/share/frame-steamvr-remote-uninstalled/` へ移します。パネルの常駐(systemd のユーザーユニット)も止めて、自動起動を外します。0.1.x でライブラリに追加された「SteamVR リモート」が残っている場合は、Steam のライブラリから自分で外してください(Steam の項目名は環境で違うので、ここでは書きません)。
+  ファイルは消さずに `~/.local/share/frame-steamvr-remote-uninstalled/` へ移します。パネルの常駐(systemd のユーザーユニット)も止めて、自動起動を外します。
 
 ## うまくいかないとき
 
