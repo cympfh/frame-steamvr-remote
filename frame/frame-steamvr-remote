@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Steam Frame から、LAN の Windows PC の SteamVR を終了・再起動する。
+
+使い方:
+  frame-steamvr-remote            ウィンドウを開く(引数なし)
+  frame-steamvr-remote status     PC と SteamVR の状態を表示
+  frame-steamvr-remote quit       PC の SteamVR を終了
+  frame-steamvr-remote restart    PC の SteamVR を再起動
+  frame-steamvr-remote pair CODE  PC のトレイに出た 6 桁のコードでペアリング
+  frame-steamvr-remote discover   LAN の PC を探して一覧を表示
+  frame-steamvr-remote forget     ペアリングを忘れる(Frame 側)
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import fsr_core as core  # noqa: E402
+
+STATE_TEXT = {"running": "起動中", "stopped": "停止中"}
+
+
+def cmd_discover(_):
+    pcs = core.discover(timeout=2.0)
+    if not pcs:
+        print("PC が見つかりません")
+        return 1
+    for p in pcs:
+        print("%s  %s  SteamVR=%s  ペアリング受付=%s" % (
+            p["ip"], p.get("name"), STATE_TEXT.get(p.get("steamvr"), "?"), "はい" if p.get("pairing") else "いいえ"))
+    return 0
+
+
+def cmd_pair(args):
+    if len(args) != 1 or not args[0].replace(" ", "").isdigit():
+        print("使い方: frame-steamvr-remote pair 123456")
+        return 2
+    code = args[0].replace(" ", "")
+    pc, pcs = core.find_pc(timeout=2.0)
+    if pc is None:
+        # まだ何も覚えていないので、見つかった PC のうちペアリング受付中のものを選ぶ
+        opening = [p for p in pcs if p.get("pairing")]
+        if len(opening) == 1:
+            pc = opening[0]
+        elif not pcs:
+            print("PC が見つかりません。PC とアプリが起動しているか確認してください")
+            return 1
+        else:
+            print("ペアリングを受け付けている PC が 1 台に決まりません。PC のトレイから「Frame とペアリングする」を選んでください")
+            return 1
+    name = core.pair(pc["ip"], int(pc.get("port") or core.CONTROL_PORT_DEFAULT), code, pc.get("name", ""))
+    print("ペアリングしました: %s" % name)
+    return 0
+
+
+def cmd_status(_):
+    r, pc = core.request_with_discovery("status")
+    print("PC: %s (%s)" % (r.get("name"), pc.get("ip")))
+    print("SteamVR: %s" % STATE_TEXT.get(r.get("steamvr"), "?"))
+    if r.get("vrchat"):
+        print("VRChat: 起動中")
+    return 0
+
+
+def cmd_op(name):
+    def run(_):
+        label = {"quit": "終了", "restart": "再起動"}[name]
+        r, _pc = core.request_with_discovery(name, timeout=90)
+        print("SteamVR の%s: %s (%s)" % (label, "成功" if r.get("ok") else "失敗", r.get("detail")))
+        print("SteamVR: %s" % STATE_TEXT.get(r.get("steamvr"), "?"))
+        return 0 if r.get("ok") else 1
+    return run
+
+
+def cmd_forget(_):
+    core.forget()
+    print("ペアリングを忘れました。PC 側は、トレイのメニューの「ペアリングを解除する」で解除できます")
+    return 0
+
+
+def cmd_gui(_):
+    import fsr_gui
+    return fsr_gui.main()
+
+
+def main(argv):
+    core.setup_logging(also_stderr=False)
+    cmds = {"discover": cmd_discover, "pair": cmd_pair, "status": cmd_status, "quit": cmd_op("quit"),
+            "restart": cmd_op("restart"), "forget": cmd_forget, "gui": cmd_gui}
+    if len(argv) < 2:
+        return cmd_gui([])
+    name = argv[1]
+    if name in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    if name not in cmds:
+        print(__doc__)
+        return 2
+    core.log.info("コマンド実行: %s", " ".join(argv[1:2] + (["<code>"] if name == "pair" else argv[2:])))
+    try:
+        return cmds[name](argv[2:])
+    except core.RemoteError as e:
+        core.log.error("%s: %s", name, e)
+        print("エラー: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

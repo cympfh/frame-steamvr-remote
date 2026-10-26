@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A1B5E"/><stop offset="1" stop-color="#0F0C29"/></linearGradient></defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <!-- PC モニター -->
+  <rect x="88" y="120" width="336" height="216" rx="28" fill="#fff"/>
+  <rect x="112" y="144" width="288" height="168" rx="12" fill="#2A1B5E"/>
+  <rect x="236" y="336" width="40" height="40" fill="#fff"/>
+  <rect x="170" y="370" width="172" height="26" rx="13" fill="#fff"/>
+  <!-- 再起動の矢印(ティール) -->
+  <g fill="none" stroke="#2BD9C4" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M321 190 A64 64 0 1 1 256 170"/>
+    <path d="M256 140 L292 170 L256 200" stroke="#2BD9C4"/>
+  </g>
+  <!-- 電源の棒(パープル) -->
+  <rect x="244" y="212" width="24" height="52" rx="12" fill="#7C5CFF"/>
+  <circle cx="400" cy="400" r="46" fill="#FF5C9A"/>
+  <path d="M382 400 L398 416 L422 384" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
