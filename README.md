@@ -18,7 +18,7 @@ PC で先に SteamVR が動いていると、あとから Frame をつなげな�
 
 ### 1. PC(Windows)
 
-1. [Releases](https://github.com/cympfh/frame-steamvr-remote/releases) から `frame-steamvr-remote.exe` をダウンロードします。
+1. [frame-steamvr-remote.exe](https://github.com/cympfh/frame-steamvr-remote/releases/latest/download/frame-steamvr-remote.exe) をダウンロードします(一覧は [Releases](https://github.com/cympfh/frame-steamvr-remote/releases))。
 2. 好きなフォルダに置いてダブルクリック。タスクトレイ(右下の ^ の中)にアイコンが出ます。
 3. 初回の Windows ファイアウォールの確認が出たら **「プライベート ネットワーク」を許可** してください。
 
