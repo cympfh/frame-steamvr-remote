@@ -10,9 +10,9 @@ PC で先に SteamVR が動いていると、あとから Frame をつなげな�
 - Frame が **同じ Wi-Fi/LAN の PC を自動で見つけます**(IP アドレスの入力は不要)
 - PC 側はタスクトレイに常駐する小さなアプリ(Windows のログイン時に自動で起動)
 - 最初に 1 回だけ、PC の画面に出る **6 桁のコード** を Frame に入力してペアリング。以降はペアリングした Frame だけが操作できます
-- 操作できるのは「SteamVR の終了」「SteamVR の再起動」「状態の確認」の 3 つだけ。VRChat には触りません
+- 操作できるのは「SteamVR の終了」「SteamVR の再起動」「状態の確認」の 3 つだけ
 
-> ⚠️ SteamVR を止めると、VRChat など SteamVR を使っているアプリは自分で終了することがあります。
+> ⚠️ SteamVR を止めると、VRChat など SteamVR を使っているアプリは自分で終了します。
 
 <p align="center"><img src="assets/screenshot.png" width="520" alt="SteamVR の中に出る「SteamVR リモート」のパネル"></p>
 
@@ -34,11 +34,11 @@ PC で先に SteamVR が動いていると、あとから Frame をつなげな�
 curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/install.sh | bash
 ```
 
-入れると、SteamVR を起動したとき一緒に起動する「SteamVR リモート」のパネルが、SteamVR のダッシュボードに出ます(次の「Frame だけで開く」)。SteamVR がすでに動いていれば、その場でパネルを起動します(SteamVR は再起動しません)。
+入れると、SteamVR を起動したとき一緒に起動する「SteamVR リモート」のパネルが、SteamVR のダッシュボードに出ます(次の「Frame だけで開く」)。SteamVR がすでに動いていれば、その場でパネルを起動します。
 
 ## Frame だけで開く(PC の画面が見えないとき)
 
-ヘッドセットの中で、SteamVR のダッシュボードを開くと **「SteamVR リモート」のパネル** があります。コントローラーのレーザーで押します。キーボードは要りません。ペアリングのコードも、パネルのテンキーで入力できます。Frame と PC の SteamVR がつながっていなくても、同じ Wi-Fi/LAN にいれば使えます。
+ヘッドセットの中で、SteamVR のダッシュボードを開くと **「SteamVR リモート」のパネル** があります。ペアリングのコードも、パネルのテンキーで入力できます。Frame と PC の SteamVR がつながっていなくても、同じ Wi-Fi/LAN にいれば使えます。
 
 - デスクトップモードのアプリメニュー →「SteamVR リモート」でも、同じ操作の画面を開けます。
 - パネルは systemd のユーザーユニット(`frame-steamvr-remote-overlay.service`)で、SteamVR と一緒に自動で起動します。止めるには `systemctl --user disable --now frame-steamvr-remote-overlay.service`。
@@ -74,12 +74,12 @@ frame-steamvr-remote discover   # LAN の PC を探す
 frame-steamvr-remote forget     # Frame 側のペアリングを忘れる
 ```
 
-## 安全について
+## 安全性について
 
 - 同じ LAN の中だけで動きます。インターネットには出ません(ルーターのポート開放はしないでください)。
 - ペアリングで作った合言葉は通信路に流れません。PC では Windows の DPAPI で暗号化して保存、Frame では自分だけが読めるファイル(権限 600)に保存します。
 - 毎回の操作は使い捨ての確認値つきなので、通信を盗み見て再送しても通りません。
-- 終了の対象は、Steam の SteamVR フォルダにある SteamVR のプログラムだけです。VRChat は対象外です。
+- 終了の対象は、Steam の SteamVR フォルダにある SteamVR のプログラムだけです。
 
 ## ログと設定
 
