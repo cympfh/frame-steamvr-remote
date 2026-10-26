@@ -14,6 +14,8 @@ PC で先に SteamVR が動いていると、あとから Frame をつなげな�
 
 > ⚠️ SteamVR を止めると、VRChat など SteamVR を使っているアプリは自分で終了することがあります。
 
+<p align="center"><img src="assets/screenshot.png" width="520" alt="SteamVR の中に出る「SteamVR リモート」のパネル"></p>
+
 ## 入れかた
 
 ### 1. PC(Windows)
