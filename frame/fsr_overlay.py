@@ -5,6 +5,8 @@ PC の SteamVR の状態を出し、「SteamVR終了」「再起動」(どちら
 ペアリング用の数字キーパッドを持つ。Frame と PC の SteamVR がつながっていなくても使える。
 """
 import fcntl
+import hashlib
+import json
 import os
 import signal
 import sys
@@ -204,16 +206,35 @@ def hit_test(buttons, x, y):
 
 
 class Panel:
-    """マウスの動き・押す・離す(コントローラーのレーザー)を、ボタンの「押した」に変える。"""
+    """マウスの動き・押す・離す(コントローラーのレーザー)を、ボタンの「押した」に変える。
 
-    def __init__(self, ctrl):
+    もう一つの仕事は「いつ画像を OpenVR に送るか」を決めること。SetOverlayRaw は、呼ぶたびに
+    直前の画像がいったん消えてから新しい画像が出る(Valve の開発者も「頻繁に呼ぶものではない」と言っている)ので、
+    送る回数が多いと、そのまま画面のちらつきになる。そのため、次のときだけ送る:
+      - 見える中身(状態・ボタンの文字・押している/指している場所)が、最後に送った画像と違うとき
+      - 前に送ってから UPLOAD_MIN_INTERVAL 秒たっているとき(続けて変わっても、まとめて 1 回)
+      - 指している場所だけが変わったときは、HOVER_SETTLE 秒そこに留まってから(手ぶれで境目を行き来しても送らない)
+    """
+
+    UPLOAD_MIN_INTERVAL = 0.25
+    HOVER_SETTLE = 0.15
+    STATS_EVERY = 60.0
+
+    def __init__(self, ctrl, clock=time.monotonic):
         self.ctrl = ctrl
+        self._clock = clock
         self.buttons = []
         self.hover = None
         self.pressed = None
         self.dirty = True
         self.rev_drawn = -1
-        self.last_draw = 0.0
+        self.hover_since = 0.0
+        self.last_upload = -1e9
+        self.sent = None          # 最後に送った画像の控え: (状態の文字列, 指している所, 押している所, 画像の指紋)
+        self.counts = {"upload": 0, "same": 0}   # 数える: 送った回数、中身が同じで送らなかった回数
+        self.total = {"upload": 0, "same": 0}
+        self._win_start = clock()
+        self.vis_seconds = 0.0    # 数えている間に、ダッシュボードが見えていた秒数
 
     def on_mouse(self, kind, x, y):
         """x, y は左上が原点の px。"""
@@ -221,9 +242,12 @@ class Panel:
         if kind == "move":
             if ident != self.hover:
                 self.hover = ident
+                self.hover_since = self._clock()
                 self.dirty = True
         elif kind == "down":
             self.pressed = ident
+            if ident != self.hover:
+                self.hover_since = self._clock()
             self.hover = ident
             self.dirty = True
         elif kind == "up":
@@ -234,22 +258,74 @@ class Panel:
                 core.log.info("パネルのボタン: %s", fired if not fired.startswith("key:") else "key")
                 return dispatch(self.ctrl, fired)
         elif kind == "leave":
+            if self.hover is not None or self.pressed is not None:
+                self.hover_since = self._clock()
             self.hover = None
             self.pressed = None
             self.dirty = True
         return None
 
+    # ------------------------------------------------------------ 描く・送るかどうか
     def needs_draw(self):
         return self.dirty or self.ctrl.rev != self.rev_drawn
 
-    def render(self):
+    def render(self, snap=None):
+        """いまの状態を描いて、RGBA の bytearray にする(送る・送らないは決めない)。"""
         self.dirty = False
         self.rev_drawn = self.ctrl.rev
-        cv, self.buttons = draw(snapshot(self.ctrl), self.hover, self.pressed)
+        snap = snap if snap is not None else snapshot(self.ctrl)
+        cv, self.buttons = draw(snap, self.hover, self.pressed)
         try:
             return cv.rgba_bytes()
         finally:
             cv.close()
+
+    def next_frame(self):
+        """いま送るべき画像があれば、その RGBA(完全に描き終えたもの)を返す。なければ None。
+
+        送らない理由は 4 つ: 何も変わっていない / まだ早い(dirty のまま、間隔があいたら 1 回にまとめて送る) /
+        指している場所だけが変わって、まだ落ち着いていない / 描いてみたら、最後に送った画像と全く同じだった。
+        何も変わっていないときは、状態も見ずに None を返す(待機中の負荷はほぼゼロ)。
+        """
+        if not self.needs_draw():
+            return None
+        now = self._clock()
+        if now - self.last_upload < self.UPLOAD_MIN_INTERVAL:
+            return None
+        rev = self.ctrl.rev
+        snap = snapshot(self.ctrl)
+        state = json.dumps(snap, sort_keys=True, ensure_ascii=False, default=str)
+        if (self.sent is not None and state == self.sent[0] and self.pressed == self.sent[2]
+                and self.hover != self.sent[1] and now - self.hover_since < self.HOVER_SETTLE):
+            return None
+        frame = self.render(snap)
+        self.rev_drawn = rev
+        digest = hashlib.blake2b(frame, digest_size=16).digest()
+        if self.sent is not None and digest == self.sent[3]:
+            self.counts["same"] += 1
+            return None
+        self.sent = (state, self.hover, self.pressed, digest)
+        self.last_upload = now
+        self.counts["upload"] += 1
+        return frame
+
+    def stats_line(self, now=None):
+        """STATS_EVERY 秒ごとに 1 回、送った回数をログ用の 1 行にして返す(まだなら None)。数は 0 に戻す。"""
+        now = self._clock() if now is None else now
+        if now - self._win_start < self.STATS_EVERY:
+            return None
+        span = now - self._win_start
+        c = self.counts
+        line = None
+        if c["upload"] or c["same"] or self.vis_seconds > 0:
+            line = "パネルの画像送信: %d 秒間に %d 回(見た目が同じで省いた %d 回、ダッシュボードが見えていた %d 秒)" % (
+                round(span), c["upload"], c["same"], round(self.vis_seconds))
+        for k in c:
+            self.total[k] += c[k]
+        self.counts = {"upload": 0, "same": 0}
+        self.vis_seconds = 0.0
+        self._win_start = now
+        return line
 
 
 # ---------------------------------------------------------------- 常駐
@@ -324,6 +400,7 @@ def run():
     panel = Panel(ctrl)
     code = 0
     last_vis_check = 0.0
+    last_loop = time.monotonic()
     try:
         while not stop["flag"]:
             now = time.monotonic()
@@ -349,10 +426,16 @@ def run():
                 elif t == vr.EV_FOCUS_LEAVE:
                     panel.on_mouse("leave", -1, -1)
             ctrl.tick()
-            if visible["v"] or panel.rev_drawn < 0:
-                if panel.needs_draw() and now - panel.last_draw >= 0.05:
-                    panel.last_draw = now
-                    ov.set_raw(main, panel.render(), W, H)
+            if visible["v"] or panel.sent is None:
+                frame = panel.next_frame()  # 見た目が変わったときだけ画像が返る(待機中は None)
+                if frame is not None:
+                    ov.set_raw(main, frame, W, H)
+            if visible["v"]:
+                panel.vis_seconds += now - last_loop
+            last_loop = now
+            line = panel.stats_line(now)
+            if line:
+                core.log.info(line)
             time.sleep(0.016 if visible["v"] else 0.25)
     except vr.OpenVRError as e:
         core.log.error("OpenVR のエラー: %s", e)

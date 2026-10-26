@@ -149,5 +149,162 @@ class PanelTest(unittest.TestCase):
             self.assertGreater(os.path.getsize(os.path.join(out, name + ".png")), 10000)
 
 
+@unittest.skipUnless(HAVE_CAIRO, "libcairo が無い")
+class UploadGateTest(unittest.TestCase):
+    """ちらつき対策: 見た目が変わらないかぎり、画像を OpenVR に送らない(SetOverlayRaw は呼ぶたびに前の画像がいったん消える)。"""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.core = FakeCore()
+        self.ctrl = model.Controller(core_mod=self.core, clock=self.clock, run_async=False)
+        self.ctrl.refresh_once()
+        self.panel = ov.Panel(self.ctrl, clock=self.clock)
+        self.frames = []
+        self.assertIsNotNone(self.pump())  # 最初の 1 枚
+
+    def pump(self):
+        """描画ループの 1 回分(送る画像があれば記録して返す)。"""
+        self.ctrl.tick()
+        f = self.panel.next_frame()
+        if f is not None:
+            self.frames.append((self.clock(), f))
+        return f
+
+    def run_for(self, seconds, step=0.016):
+        n = 0
+        end = self.clock() + seconds
+        while self.clock() < end:
+            self.clock.advance(step)
+            if self.pump() is not None:
+                n += 1
+        return n
+
+    def center(self, ident):
+        b = {b.id: b for b in self.panel.buttons}[ident]
+        return b.x + b.w / 2, b.y + b.h / 2
+
+    def test_first_frame_is_complete_and_sized(self):
+        self.assertEqual(len(self.frames[0][1]), ov.W * ov.H * 4)
+        self.assertEqual(self.panel.counts["upload"], 1)
+
+    def test_idle_uploads_nothing(self):
+        self.assertEqual(self.run_for(120), 0)
+        self.assertEqual(self.panel.counts["upload"], 1)
+
+    def test_idle_does_not_even_render(self):
+        calls = []
+        orig = self.panel.render
+        self.panel.render = lambda *a, **k: calls.append(1) or orig(*a, **k)
+        self.run_for(30)
+        self.assertEqual(calls, [])
+
+    def test_polling_same_status_does_not_bump_rev_or_upload(self):
+        rev = self.ctrl.rev
+        for _ in range(10):  # 4 秒ごとの状態確認(中身は同じ)
+            self.clock.advance(4.0)
+            self.ctrl.refresh_once()
+            self.assertIsNone(self.pump())
+        self.assertEqual(self.ctrl.rev, rev)
+        self.assertEqual(self.panel.counts["upload"], 1)
+
+    def test_status_change_uploads_once(self):
+        self.core.vrchat = True
+        self.clock.advance(4.0)
+        self.ctrl.refresh_once()
+        self.assertEqual(self.run_for(2), 1)
+        self.assertEqual(self.run_for(10), 0)
+
+    def test_rev_bump_with_identical_picture_is_skipped(self):
+        self.ctrl._changed()
+        self.clock.advance(1)
+        self.assertIsNone(self.pump())
+        self.assertEqual(self.panel.counts["same"], 1)
+        self.assertFalse(self.panel.needs_draw())  # 見た目が同じだと分かったら、もう描き直さない
+        self.assertEqual(self.run_for(5), 0)
+
+    def test_hover_jitter_at_a_button_edge_uploads_nothing(self):
+        qx, qy = self.center("quit")
+        # 境目を 20 回/秒で行き来する(手ぶれ)。どこにも落ち着かない
+        n = 0
+        for i in range(60):
+            self.clock.advance(0.05)
+            self.panel.on_mouse("move", qx, qy) if i % 2 == 0 else self.panel.on_mouse("move", -5, -5)
+            if self.pump() is not None:
+                n += 1
+        self.assertEqual(n, 0)
+
+    def test_hover_that_settles_uploads_once(self):
+        qx, qy = self.center("quit")
+        self.clock.advance(1)
+        self.panel.on_mouse("move", qx, qy)
+        self.assertEqual(self.run_for(2), 1)
+        self.assertEqual(self.run_for(5), 0)
+        # マウスが動き続けても、同じボタンの上なら送らない
+        for _ in range(100):
+            self.clock.advance(0.016)
+            self.panel.on_mouse("move", qx + 1, qy + 1)
+            self.assertIsNone(self.pump())
+
+    def test_hover_on_disabled_button_changes_nothing(self):
+        self.ctrl.status = None  # PC が見えない(ボタンが押せない)
+        self.ctrl.view = "search"
+        self.ctrl._changed()
+        self.clock.advance(1)
+        self.assertEqual(self.run_for(1), 1)
+        self.panel.on_mouse("move", 5, 5)
+        self.panel.on_mouse("leave", -1, -1)
+        self.assertEqual(self.run_for(3), 0)
+
+    def test_uploads_are_at_least_min_interval_apart(self):
+        qx, qy = self.center("quit")
+        rx, ry = self.center("restart")
+        t = 0
+        for i in range(200):  # 押す・離すを速く繰り返す
+            self.clock.advance(0.02)
+            self.panel.on_mouse("move", qx if i % 2 else rx, qy if i % 2 else ry)
+            self.panel.on_mouse("down", qx if i % 2 else rx, qy if i % 2 else ry)
+            self.pump()
+            self.panel.on_mouse("leave", -1, -1)
+            self.pump()
+            t += 1
+        times = [t for t, _ in self.frames]
+        gaps = [b - a for a, b in zip(times, times[1:])]
+        self.assertTrue(all(g >= 0.25 - 1e-9 for g in gaps), min(gaps))
+
+    def test_arm_countdown_uploads_once_per_second(self):
+        qx, qy = self.center("quit")
+        self.clock.advance(1)
+        self.panel.on_mouse("move", qx, qy)
+        self.run_for(1)  # ホバーの画像
+        self.panel.on_mouse("down", qx, qy)
+        self.run_for(0.5)  # 押した画像
+        self.assertEqual(self.panel.on_mouse("up", qx, qy), arm.ARMED)
+        before = len(self.frames)
+        self.run_for(0.5)
+        self.assertEqual(len(self.frames) - before, 1)  # 「もう一度押すと終了(5)」の画像
+        t_arm = self.clock()
+        mark = len(self.frames)
+        n = self.run_for(6)  # 5 秒たつと待機が外れる
+        # 数字が 4,3,2,1 と進み、最後に待機が外れて元の文字に戻る = 5 枚。1 秒に 1 枚
+        self.assertEqual(n, 5)
+        times = [t for t, _ in self.frames[mark:]]
+        gaps = [b - a for a, b in zip(times, times[1:])]
+        self.assertTrue(all(0.95 <= g <= 1.1 for g in gaps), gaps)
+        self.assertLess(times[0] - t_arm, 1.1)
+        self.assertEqual(self.run_for(10), 0)  # そのあとは静か
+
+    def test_stats_line(self):
+        self.assertIsNone(self.panel.stats_line())
+        self.clock.advance(61)
+        line = self.panel.stats_line()
+        self.assertIn("1 回", line)
+        self.assertEqual(self.panel.total["upload"], 1)
+        self.clock.advance(61)
+        self.assertIsNone(self.panel.stats_line())  # 静かな 1 分は、ダッシュボードが見えていなければ何も出さない
+        self.clock.advance(61)
+        self.panel.vis_seconds = 30
+        self.assertIn("0 回", self.panel.stats_line())  # 見えているのに 0 回、は書く(待機中の確認ができる)
+
+
 if __name__ == "__main__":
     unittest.main()

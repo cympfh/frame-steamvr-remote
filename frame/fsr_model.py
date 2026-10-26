@@ -226,12 +226,14 @@ class Controller:
                 opening = [p for p in pcs if p.get("pairing")]
                 pc = opening[0] if len(opening) == 1 else (pcs[0] if len(pcs) == 1 else None)
             with self.lock:
+                before = (self.pc, self.status, self.view, self.arm.armed())
                 self.pc, self.status = pc, None
                 self.arm.disarm()
                 if self.view != "pair":
                     self.view = "pair"
                     self.code = ""
-                self._changed()
+                if before != (self.pc, self.status, self.view, self.arm.armed()):
+                    self._changed()  # 変わらなかったときは rev を増やさない(画面を描き直さない)
             return
         try:
             r, pc = self.core.request_with_discovery("status", timeout=6)
@@ -246,6 +248,7 @@ class Controller:
                     self._changed()
             else:
                 with self.lock:
+                    before = (self.status, self.view, self.offline_text, self.offline_last, self.arm.armed())
                     self.status = None
                     self.arm.disarm()
                     if self.view != "pair":
@@ -253,10 +256,13 @@ class Controller:
                     self.offline_text = str(e)
                     self.offline_last = ("前につながった PC: %s (%s)" % (cfg.get("pc_name"), cfg.get("pc_ip", "?"))
                                          if cfg.get("pc_name") else "")
-                    self._changed()
+                    if before != (self.status, self.view, self.offline_text, self.offline_last, self.arm.armed()):
+                        self._changed()
             return
         with self.lock:
+            before = (self.pc, self.status, self.view)
             self.pc, self.status = pc, r
             if self.view != "main" and not (self.view == "pair" and self.repair):
                 self.view = "main"
-            self._changed()
+            if before != (self.pc, self.status, self.view):
+                self._changed()  # 4 秒ごとの状態確認で、中身が同じなら描き直さない
