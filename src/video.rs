@@ -30,10 +30,6 @@ impl VideoState {
         Arc::new(VideoState { root, tokens: Mutex::new(Vec::new()), pending_url: Mutex::new(None) })
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// 新しいトークンを作って返す(古いものは期限切れか、多すぎる分から捨てる)。
     pub fn new_token(&self) -> String {
         let t = random_hex(24);
