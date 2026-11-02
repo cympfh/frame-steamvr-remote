@@ -25,11 +25,28 @@ pub struct VideoState {
     root: PathBuf,
     tokens: Mutex<Vec<(String, Instant)>>,
     pending_url: Mutex<Option<String>>,
+    /// 認証前(要求の頭を読んでいる途中)の接続の数。上限 MAX_PENDING。
+    pending: AtomicUsize,
+    /// トークンが通った接続の数。上限 MAX_CONNS(認証前の接続はこの枠を使わない)。
+    active: AtomicUsize,
+    /// 最初の要求行+ヘッダーを読み終えるまでの全体の期限(1 バイトずつ送る相手で枠が埋まらないように)。
+    head_deadline: Duration,
 }
 
 impl VideoState {
     pub fn new(root: PathBuf) -> Arc<VideoState> {
-        Arc::new(VideoState { root, tokens: Mutex::new(Vec::new()), pending_url: Mutex::new(None) })
+        Self::with_deadline(root, HEAD_DEADLINE)
+    }
+
+    fn with_deadline(root: PathBuf, head_deadline: Duration) -> Arc<VideoState> {
+        Arc::new(VideoState {
+            root,
+            tokens: Mutex::new(Vec::new()),
+            pending_url: Mutex::new(None),
+            pending: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            head_deadline,
+        })
     }
 
     /// 新しいトークンを作って返す(古いものは期限切れか、多すぎる分から捨てる)。
@@ -97,29 +114,39 @@ impl VideoState {
         log!("動画の配信を待ち受け開始: TCP {} フォルダ={}", port, self.root.display());
         for s in l.incoming() {
             let Ok(s) = s else { continue };
-            if ACTIVE.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
-                ACTIVE.fetch_sub(1, Ordering::SeqCst);
-                log!("動画の配信: 接続が多すぎるので断る ({:?})", s.peer_addr().ok());
+            if self.pending.fetch_add(1, Ordering::SeqCst) >= MAX_PENDING {
+                self.pending.fetch_sub(1, Ordering::SeqCst);
+                log!("動画の配信: 認証前の接続が多すぎるので断る ({:?})", s.peer_addr().ok());
                 continue; // s を落として閉じる
             }
             let me = self.clone();
             std::thread::spawn(move || {
                 let peer = s.peer_addr().ok();
-                if let Err(e) = me.serve(s) {
+                let mut authed = false;
+                if let Err(e) = me.serve(s, &mut authed) {
                     log!("動画の配信でエラー ({:?}): {}", peer, e);
                 }
-                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                if authed {
+                    me.active.fetch_sub(1, Ordering::SeqCst);
+                } else {
+                    me.pending.fetch_sub(1, Ordering::SeqCst);
+                }
             });
         }
         Ok(())
     }
 
-    fn serve(&self, s: TcpStream) -> Result<(), String> {
-        s.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    /// 1 本の接続を処理する。トークンが通ったら認証前の枠から認証済みの枠へ移し、*authed を true にする。
+    fn serve(&self, s: TcpStream, authed: &mut bool) -> Result<(), String> {
         let peer = s.peer_addr().ok();
-        let mut r = BufReader::new(s.try_clone().map_err(|e| e.to_string())?);
+        let mut r = BufReader::new(DeadlineReader { s: s.try_clone().map_err(|e| e.to_string())?, deadline: None });
         let mut w = s;
+        let mut first = true;
         loop {
+            // 最初の要求は接続から head_deadline 以内に頭(要求行+ヘッダー)を読み終える。
+            // 認証済みの接続の次の要求は、待つ時間も含めて IDLE_LIMIT まで。
+            r.get_mut().deadline = Some(Instant::now() + if first { self.head_deadline } else { IDLE_LIMIT });
+            first = false;
             let mut line = String::new();
             if read_line_limited(&mut r, &mut line)? == 0 {
                 return Ok(());
@@ -154,6 +181,8 @@ impl VideoState {
                     }
                 }
             }
+            // 本体を送る間は 1 回ごとの読み取りの時間切れだけにする(本体の読み取りはないが念のため)
+            r.get_mut().deadline = None;
             let head = method == "HEAD";
             if method != "GET" && !head {
                 respond(&mut w, "405 Method Not Allowed", "text/plain", b"method", head)?;
@@ -168,6 +197,15 @@ impl VideoState {
                 std::thread::sleep(Duration::from_millis(300));
                 respond(&mut w, "403 Forbidden", "text/plain", b"forbidden", head)?;
                 return Ok(());
+            }
+            if !*authed {
+                if self.active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+                    self.active.fetch_sub(1, Ordering::SeqCst);
+                    respond(&mut w, "503 Service Unavailable", "text/plain", b"busy", head)?;
+                    return Ok(());
+                }
+                self.pending.fetch_sub(1, Ordering::SeqCst);
+                *authed = true;
             }
             match segs.first().copied() {
                 Some("list") => {
@@ -238,8 +276,30 @@ impl VideoState {
     }
 }
 
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 const MAX_CONNS: usize = 16;
+const MAX_PENDING: usize = 8;
+const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+const IDLE_LIMIT: Duration = Duration::from_secs(30);
+
+/// 読み取りごとに「期限までの残り時間」を時間切れに設定する。期限を過ぎたら読まずに失敗する。
+struct DeadlineReader {
+    s: TcpStream,
+    deadline: Option<Instant>,
+}
+
+impl Read for DeadlineReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = match self.deadline {
+            Some(d) => d.saturating_duration_since(Instant::now()),
+            None => IDLE_LIMIT,
+        };
+        if left.is_zero() {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "要求の頭が期限までに届かない"));
+        }
+        self.s.set_read_timeout(Some(left))?;
+        self.s.read(buf)
+    }
+}
 const MAX_LINE: usize = 8192;
 const MAX_HEADERS: usize = 64;
 
@@ -431,6 +491,50 @@ mod tests {
         let mut out = Vec::new();
         let _ = s.read_to_end(&mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn slow_headers_hit_the_overall_deadline_and_do_not_block_authed() {
+        let dir = std::env::temp_dir().join(format!("fsr-video-slow-{}", random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.mp4"), b"0123456789").unwrap();
+        let v = VideoState::with_deadline(dir, Duration::from_millis(800));
+        let t = v.new_token();
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let v2 = v.clone();
+        std::thread::spawn(move || v2.run_http(port));
+        std::thread::sleep(Duration::from_millis(200));
+        // 認証前の枠を全部、1 バイトずつ送る接続で埋める(1 回の読み取りの時間切れより短い間隔)
+        let mut slow: Vec<TcpStream> = (0..MAX_PENDING).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+        let t0 = Instant::now();
+        let mut closed = vec![false; slow.len()];
+        while t0.elapsed() < Duration::from_millis(2500) && closed.iter().any(|c| !c) {
+            for (i, s) in slow.iter_mut().enumerate() {
+                if !closed[i] && s.write_all(b"G").is_err() {
+                    closed[i] = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        // 期限(0.8 秒)で全部切られ、枠が空く
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(v.pending.load(Ordering::SeqCst), 0);
+        for s in slow.iter_mut() {
+            s.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+            let mut b = [0u8; 16];
+            assert!(matches!(s.read(&mut b), Ok(0) | Err(_)));
+        }
+        // 認証済みの接続は認証前の枠を使わない: 再生中の接続があっても新しい遅い接続は別に数える
+        let mut ok = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(ok, "GET /v/{}/a.mp4 HTTP/1.1\r\nHost: x\r\n\r\n", t).unwrap();
+        let mut b = [0u8; 12];
+        ok.read_exact(&mut b).unwrap();
+        assert_eq!(&b, b"HTTP/1.1 200");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(v.active.load(Ordering::SeqCst), 1);
+        assert_eq!(v.pending.load(Ordering::SeqCst), 0);
     }
 
     #[test]
