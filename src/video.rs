@@ -2,7 +2,8 @@
 //!
 //! - PC の「ビデオ」フォルダの動画を、LAN の HTTP(ポート 47652)で Frame に流す。Range 要求に対応(シーク用)。
 //! - URL には使い捨ての合言葉(トークン)が入る。トークンは、ペアリング済みの Frame が TCP 47651 の
-//!   `video` 要求(HMAC で認証済み)でだけ受け取れる。12 時間で無効になる。
+//!   `video` 要求(HMAC で認証済み)でだけ受け取れる。12 時間使われないと無効になる
+//!   (使うたびに延びるので、再生中に切れることはない)。
 //! - トレイから「YouTube の URL を Frame に送る」と、URL を預かり、次の `video` 要求で Frame に渡す。
 use crate::log;
 use crate::proto::random_hex;
@@ -10,6 +11,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,9 +44,18 @@ impl VideoState {
         t
     }
 
+    /// トークンが有効か。使われたトークンは時刻を新しくして末尾へ回すので、再生中のものは消えない。
     pub fn token_ok(&self, t: &str) -> bool {
-        let g = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
-        g.iter().any(|(x, at)| at.elapsed() < TOKEN_LIFE && crate::proto::ct_eq(x.as_bytes(), t.as_bytes()))
+        let mut g = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let hit = g.iter().position(|(x, at)| at.elapsed() < TOKEN_LIFE && crate::proto::ct_eq(x.as_bytes(), t.as_bytes()));
+        match hit {
+            Some(i) => {
+                let (x, _) = g.remove(i);
+                g.push((x, Instant::now()));
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn set_url(&self, url: &str) {
@@ -86,12 +97,18 @@ impl VideoState {
         log!("動画の配信を待ち受け開始: TCP {} フォルダ={}", port, self.root.display());
         for s in l.incoming() {
             let Ok(s) = s else { continue };
+            if ACTIVE.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                log!("動画の配信: 接続が多すぎるので断る ({:?})", s.peer_addr().ok());
+                continue; // s を落として閉じる
+            }
             let me = self.clone();
             std::thread::spawn(move || {
                 let peer = s.peer_addr().ok();
                 if let Err(e) = me.serve(s) {
                     log!("動画の配信でエラー ({:?}): {}", peer, e);
                 }
+                ACTIVE.fetch_sub(1, Ordering::SeqCst);
             });
         }
         Ok(())
@@ -104,7 +121,7 @@ impl VideoState {
         let mut w = s;
         loop {
             let mut line = String::new();
-            if r.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+            if read_line_limited(&mut r, &mut line)? == 0 {
                 return Ok(());
             }
             let parts: Vec<&str> = line.trim_end().split(' ').collect();
@@ -114,9 +131,14 @@ impl VideoState {
             let (method, target) = (parts[0], parts[1]);
             let mut range: Option<String> = None;
             let mut close = false;
+            let mut nh = 0;
             loop {
+                nh += 1;
+                if nh > MAX_HEADERS {
+                    return Err("ヘッダーが多すぎる".into());
+                }
                 let mut h = String::new();
-                if r.read_line(&mut h).map_err(|e| e.to_string())? == 0 {
+                if read_line_limited(&mut r, &mut h)? == 0 {
                     return Ok(());
                 }
                 let h = h.trim_end();
@@ -151,7 +173,7 @@ impl VideoState {
                 Some("list") => {
                     let files: Vec<_> = self.list().into_iter().map(|(p, n)| json!({"path": p, "size": n})).collect();
                     log!("動画の一覧を送信 ({:?}): {} 件", peer, files.len());
-                    let body = json!({"root": self.root.display().to_string(), "files": files}).to_string();
+                    let body = json!({"files": files}).to_string();
                     respond(&mut w, "200 OK", "application/json; charset=utf-8", body.as_bytes(), head)?;
                 }
                 Some("v") => {
@@ -175,6 +197,8 @@ impl VideoState {
     fn send_file(&self, w: &mut TcpStream, f: &Path, range: Option<&str>, head: bool, peer: Option<std::net::SocketAddr>) -> Result<(), String> {
         let mut file = std::fs::File::open(f).map_err(|e| e.to_string())?;
         let size = file.metadata().map_err(|e| e.to_string())?.len();
+        // bytes= 以外の単位(items= など)は無視して全体を返す
+        let range = range.filter(|r| r.trim_start().to_ascii_lowercase().starts_with("bytes="));
         let (start, end, partial) = match range.and_then(|r| parse_range(r, size)) {
             Some((a, b)) => (a, b, true),
             None if range.is_some() => {
@@ -212,6 +236,20 @@ impl VideoState {
         }
         Ok(())
     }
+}
+
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONNS: usize = 16;
+const MAX_LINE: usize = 8192;
+const MAX_HEADERS: usize = 64;
+
+/// 1 行を MAX_LINE バイトまで読む。改行が来ないまま上限に達したらエラー。
+fn read_line_limited<R: BufRead>(r: &mut R, out: &mut String) -> Result<usize, String> {
+    let n = r.by_ref().take(MAX_LINE as u64).read_line(out).map_err(|e| e.to_string())?;
+    if n == MAX_LINE && !out.ends_with('\n') {
+        return Err("行が長すぎる".into());
+    }
+    Ok(n)
 }
 
 fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>, depth: usize) {
@@ -368,6 +406,48 @@ mod tests {
         assert!(r.ends_with("234"));
         assert!(r.contains("Content-Range: bytes 2-4/10"));
         assert!(get("/v/bad/a%20b.mp4", "").starts_with("HTTP/1.1 403"));
-        assert!(get(&format!("/list/{}", t), "").contains("a b.mp4"));
+        let list = get(&format!("/list/{}", t), "");
+        assert!(list.contains("a b.mp4"));
+        assert!(!list.contains("root"), "{}", list);
+        // bytes 以外の単位は無視して全体
+        let r = get(&format!("/v/{}/a%20b.mp4", t), "Range: items=0-1\r\n");
+        assert!(r.starts_with("HTTP/1.1 200"), "{}", r);
+        assert!(r.ends_with("0123456789"));
+        // 改行のない長い行は読み続けずに切る
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let junk = vec![b'A'; MAX_LINE * 4];
+        let _ = s.write_all(&junk);
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        assert!(out.is_empty());
+        // ヘッダーが多すぎても切る
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut req = format!("GET /list/{} HTTP/1.1\r\n", t);
+        for i in 0..(MAX_HEADERS + 5) {
+            req.push_str(&format!("X-{}: y\r\n", i));
+        }
+        req.push_str("\r\n");
+        let _ = s.write_all(req.as_bytes());
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn used_token_survives_newer_ones() {
+        let v = VideoState::new(std::env::temp_dir());
+        let t = v.new_token();
+        for _ in 0..MAX_TOKENS - 1 {
+            v.new_token();
+        }
+        assert!(v.token_ok(&t)); // 使われたので末尾へ
+        for _ in 0..MAX_TOKENS - 1 {
+            v.new_token();
+        }
+        assert!(v.token_ok(&t));
+        for _ in 0..MAX_TOKENS {
+            v.new_token();
+        }
+        assert!(!v.token_ok(&t));
     }
 }
