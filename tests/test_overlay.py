@@ -1,4 +1,5 @@
 """OpenVR のパネルの、描画の配置・マウス入力・関数表の並びのテスト。SteamVR には つながない。"""
+import ctypes
 import os
 import re
 import sys
@@ -550,6 +551,25 @@ class InitErrorTest(unittest.TestCase):
         for line in src.splitlines():
             if "VR_GetVRInitErrorAsSymbol" in line:
                 self.assertTrue(line.strip().startswith(("#", "libopenvr_api の")), line)
+
+
+class QuitEvents(unittest.TestCase):
+    """回帰: 別の OpenVR のプロセスが終わったとき(701)にパネルが閉じてはいけない。"""
+
+    def ev(self, t, pid):
+        e = vr.VREvent()
+        e.eventType = t
+        ctypes.memmove(ctypes.addressof(e) + 12, ctypes.byref(ctypes.c_uint32(pid)), 4)
+        return e
+
+    def test_quit(self):
+        self.assertTrue(ov.is_own_quit(self.ev(vr.EV_QUIT, 0), 1234))
+
+    def test_other_process_quit_is_ignored(self):
+        self.assertFalse(ov.is_own_quit(self.ev(vr.EV_PROCESS_QUIT, 999), 1234))
+
+    def test_own_process_quit(self):
+        self.assertTrue(ov.is_own_quit(self.ev(vr.EV_PROCESS_QUIT, 1234), 1234))
 
 
 if __name__ == "__main__":

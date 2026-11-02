@@ -201,6 +201,14 @@ def _draw_pair(cv, buttons, snap, hover, pressed, layered):
         _small_button(cv, buttons, "back", "もどる", 60, 824, 220, 62, hover, pressed, layered=layered)
 
 
+def is_own_quit(ev, pid):
+    """自分あての終了の知らせか。700 (Quit) は自分あて。701 (ProcessQuit) は、どこかの OpenVR の
+    プロセスが終わるたびに全員へ届くので、pid が自分のときだけ。"""
+    if ev.eventType == vr.EV_QUIT:
+        return True
+    return ev.eventType == vr.EV_PROCESS_QUIT and vr.event_pid(ev) == pid
+
+
 # ---------------------------------------------------------------- 入力
 def to_panel_xy(x, y):
     """OpenVR のマウス座標(左下が原点・単位は SetOverlayMouseScale の W×H)を、画像の座標(左上が原点)にする。"""
@@ -720,7 +728,7 @@ def run():
                 ov.show_dashboard(OVERLAY_KEY)
             for ev in ov.poll(main):
                 t = ev.eventType
-                if t in (vr.EV_QUIT, vr.EV_PROCESS_QUIT):
+                if is_own_quit(ev, os.getpid()):
                     core.log.info("SteamVR から終了の知らせ(イベント %s)が来たので、パネルを閉じる(systemd が 5 秒後に起動し直す。SteamVR が本当に終わるときは、SteamVR と一緒に止まる)", t)
                     stop["flag"] = True
                 elif t in (vr.EV_MOUSE_MOVE, vr.EV_MOUSE_DOWN, vr.EV_MOUSE_UP):
