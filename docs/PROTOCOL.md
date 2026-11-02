@@ -27,7 +27,7 @@ Frame は 1 行だけ送ります。
 ### 操作リクエスト
 
 ```json
-{"t":"req","client":"<Frame の ID>","cmd":"status|quit|restart","mac":"<hex>"}
+{"t":"req","client":"<Frame の ID>","cmd":"status|quit|restart|video","mac":"<hex>"}
 ```
 
 `mac = HMAC-SHA256(secret, "req|" + nonce + "|" + client + "|" + cmd)` (hex)。
@@ -37,6 +37,7 @@ nonce は接続ごとの使い捨てなので、盗み見て再送しても通�
 
 - `status`: `{"t":"status","name":..,"id":..,"steamvr":"running|stopped","vrchat":true|false}`
 - `quit` / `restart`: `{"t":"result","cmd":..,"ok":true|false,"steamvr":"running|stopped","detail":".."}`
+- `video`: `{"t":"video","port":47652,"token":"<48 桁の hex>","url":"<再生待ちの URL か null>"}`。`url` は一度渡したら消えます。
 - 失敗: `{"t":"error","error":"auth|unknown_cmd|bad_request|..."}`
 
 `quit` / `restart` は終わるまで返事を待たせます(数秒〜十数秒)。同時には 1 つだけ実行します。
@@ -55,6 +56,13 @@ PC のトレイで「Frame とペアリングする」を選ぶと 6 桁のコ�
 6. 共有の合言葉 `secret = HMAC(K, "secret|" + code + "|" + A + "|" + B)` を両側で計算して保存します(通信には出ません)。
 
 PC は小さい位数の公開鍵(K が全部 0 になるもの)を拒否します。
+
+## 動画の配信 (HTTP 47652)
+
+`video` で受け取ったトークンを使います。トークンは 12 時間有効で、新しいものから 8 個まで覚えています。
+
+- `GET /list/<token>`: PC の「ビデオ」フォルダにある動画の一覧 (JSON)。
+- `GET /v/<token>/<URL エンコードした相対パス>`: 動画そのもの。`Range` に対応します。フォルダの外や動画以外のファイルは返しません。
 
 ## 保存
 

@@ -62,6 +62,13 @@ curl -fsSL https://raw.githubusercontent.com/cympfh/frame-steamvr-remote/main/in
 
 PC でトレイのメニューからも同じ操作ができます。
 
+### 動画を Frame で見る
+
+[frame-video-player](https://github.com/cympfh/frame-video-player) を Frame に入れると、タスクトレイのメニューから次が使えます。
+
+- 「Frame に見せる動画のフォルダを開く」: ここ (PC の「ビデオ」フォルダ) に置いた動画を Frame の「PC の動画」から見られます。
+- 「コピーした動画の URL を Frame で再生する」: YouTube などの URL をコピーしてから押すと、Frame で再生が始まります。
+
 ### コマンド(上級者向け)
 
 ```sh
