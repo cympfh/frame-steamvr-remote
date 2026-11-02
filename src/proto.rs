@@ -87,6 +87,14 @@ pub fn request_mac(secret: &[u8], nonce_hex: &str, client: &str, cmd: &str) -> S
     hmac_hex(secret, &request_message(nonce_hex, client, cmd))
 }
 
+/// 長さと中身を、時間差の出ない方法で比べる。
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 pub fn verify_request(secret: &[u8], nonce_hex: &str, client: &str, cmd: &str, mac_hex: &str) -> bool {
     verify_hex(secret, &request_message(nonce_hex, client, cmd), mac_hex)
 }
