@@ -204,7 +204,8 @@ impl VideoState {
         let mut left = len;
         let mut buf = vec![0u8; 256 * 1024];
         while left > 0 {
-            let n = file.read(&mut buf[..left.min(buf.len() as u64) as usize]).map_err(|e| e.to_string())?;
+            let cap = left.min(buf.len() as u64) as usize;
+            let n = file.read(&mut buf[..cap]).map_err(|e| e.to_string())?;
             if n == 0 {
                 break;
             }
