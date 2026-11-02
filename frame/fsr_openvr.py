@@ -109,6 +109,11 @@ class VREvent(ctypes.Structure):
 assert ctypes.sizeof(VREvent) == EVENT_SIZE
 
 
+def event_pid(ev):
+    """VREvent_Process_t の pid。data は x と同じ位置(オフセット 12)から始まる。"""
+    return ctypes.c_uint32.from_buffer_copy(bytes(ev)[12:16]).value
+
+
 class OpenVRError(Exception):
     def __init__(self, message, code=None):
         super().__init__(message)
