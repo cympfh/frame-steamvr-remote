@@ -367,59 +367,6 @@ const ID_RESTART_VR: usize = 1005;
 const ID_AUTOSTART: usize = 1006;
 const ID_OPEN_LOG: usize = 1007;
 const ID_EXIT: usize = 1008;
-const ID_SEND_URL: usize = 1009;
-const ID_OPEN_VIDEOS: usize = 1010;
-
-static VIDEO: OnceLock<Arc<crate::video::VideoState>> = OnceLock::new();
-
-pub fn set_video(v: Arc<crate::video::VideoState>) {
-    let _ = VIDEO.set(v);
-}
-
-/// 「ビデオ」フォルダ(Windows の既知のフォルダ。移動していればその場所)。
-pub fn videos_dir() -> std::path::PathBuf {
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
-    unsafe {
-        let mut p: windows_sys::core::PWSTR = null_mut();
-        if SHGetKnownFolderPath(&FOLDERID_Videos, 0, null_mut(), &mut p) == 0 && !p.is_null() {
-            let mut n = 0;
-            while *p.add(n) != 0 {
-                n += 1;
-            }
-            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
-            CoTaskMemFree(p as *const _);
-            return std::path::PathBuf::from(s);
-        }
-    }
-    std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default()).join("Videos")
-}
-
-/// クリップボードの文字を読む。
-fn clipboard_text() -> Option<String> {
-    use windows_sys::Win32::System::DataExchange::*;
-    use windows_sys::Win32::System::Memory::*;
-    const CF_UNICODETEXT: u32 = 13;
-    unsafe {
-        if OpenClipboard(null_mut()) == 0 {
-            return None;
-        }
-        let mut out = None;
-        let h = GetClipboardData(CF_UNICODETEXT);
-        if !h.is_null() {
-            let p = GlobalLock(h) as *const u16;
-            if !p.is_null() {
-                let mut n = 0;
-                while *p.add(n) != 0 && n < 8192 {
-                    n += 1;
-                }
-                out = Some(String::from_utf16_lossy(std::slice::from_raw_parts(p, n)));
-                GlobalUnlock(h);
-            }
-        }
-        CloseClipboard();
-        out
-    }
-}
 
 fn tip_text() -> String {
     let host = HOST.get();
@@ -483,9 +430,6 @@ unsafe fn show_menu(hwnd: HWND) {
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     add(MF_STRING, ID_QUIT_VR, "SteamVR を終了する");
     add(MF_STRING, ID_RESTART_VR, "SteamVR を再起動する");
-    AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    add(MF_STRING, ID_SEND_URL, "コピーした動画の URL を Frame で再生する");
-    add(MF_STRING, ID_OPEN_VIDEOS, "Frame に見せる動画のフォルダを開く");
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     add(MF_STRING | if autostart_enabled() { MF_CHECKED } else { 0 }, ID_AUTOSTART, "Windows の起動時に自動で起動する");
     add(MF_STRING, ID_OPEN_LOG, "ログのフォルダを開く");
@@ -569,20 +513,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 }
                 ID_OPEN_LOG => {
                     let dir = crate::paths::data_dir();
-                    ShellExecuteW(null_mut(), w("open").as_ptr(), w(&dir.display().to_string()).as_ptr(), null(), null(), SW_SHOWNORMAL);
-                }
-                ID_SEND_URL => match clipboard_text().map(|t| t.trim().to_string()) {
-                    Some(u) if crate::video::looks_like_url(&u) => {
-                        if let Some(v) = VIDEO.get() {
-                            v.set_url(&u);
-                        }
-                        log!("URL を預かった(Frame の動画プレイヤーが受け取る): {}", u);
-                        notify_note("URL を預かりました。Frame の動画プレイヤーで「PC から受け取る」を押してください");
-                    }
-                    _ => notify_note("クリップボードに URL がありません。先に動画の URL をコピーしてください"),
-                },
-                ID_OPEN_VIDEOS => {
-                    let dir = videos_dir();
                     ShellExecuteW(null_mut(), w("open").as_ptr(), w(&dir.display().to_string()).as_ptr(), null(), null(), SW_SHOWNORMAL);
                 }
                 ID_EXIT => {
