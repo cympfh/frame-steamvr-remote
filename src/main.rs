@@ -10,7 +10,6 @@ mod proto;
 mod server;
 mod settings;
 mod steamvr;
-mod video;
 #[cfg(windows)]
 mod win;
 
@@ -37,17 +36,6 @@ fn main() {
     win::first_run_autostart();
     let host = Arc::new(win::WinHost::new(s.pc_id.clone()));
     let srv = server::Server::new(host.clone());
-    {
-        let v = video::VideoState::new(win::videos_dir());
-        srv.set_video(v.clone());
-        win::set_video(v.clone());
-        std::thread::spawn(move || loop {
-            if let Err(e) = v.run_http(video::VIDEO_PORT) {
-                log!("動画の配信の待ち受けに失敗: {} (10 秒後に再試行)", e);
-                std::thread::sleep(std::time::Duration::from_secs(10));
-            }
-        });
-    }
     {
         let srv = srv.clone();
         std::thread::spawn(move || loop {

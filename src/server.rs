@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub struct OpResult {
@@ -48,7 +48,6 @@ pub struct Server {
     op_lock: Mutex<()>,
     active: AtomicUsize,
     control_port: u16,
-    video: OnceLock<Arc<crate::video::VideoState>>,
 }
 
 impl Server {
@@ -64,13 +63,7 @@ impl Server {
             op_lock: Mutex::new(()),
             active: AtomicUsize::new(0),
             control_port,
-            video: OnceLock::new(),
         })
-    }
-
-    /// 動画の配信(frame-video-player 用)をつなぐ。
-    pub fn set_video(&self, v: Arc<crate::video::VideoState>) {
-        let _ = self.video.set(v);
     }
 
     /// ペアリングを受け付け始め、表示するコードを返す。
@@ -209,14 +202,6 @@ impl Server {
                 log!("{} の結果: ok={} state={} detail={}", cmd, res.ok, res.state, res.detail);
                 send(w, &json!({"t": "result", "cmd": cmd, "ok": res.ok, "steamvr": res.state, "detail": res.detail}))
             }
-            "video" => match self.video.get() {
-                Some(v) => {
-                    let url = v.take_url();
-                    log!("動画のトークンを渡す (URL {})", if url.is_some() { "あり" } else { "なし" });
-                    send(w, &json!({"t": "video", "port": crate::video::VIDEO_PORT, "token": v.new_token(), "url": url}))
-                }
-                None => send(w, &json!({"t": "error", "error": "unknown_cmd"})),
-            },
             _ => send(w, &json!({"t": "error", "error": "unknown_cmd"})),
         }
     }
