@@ -224,30 +224,6 @@ impl VideoState {
                         }
                     }
                 }
-                Some("drives") => {
-                    let body = json!({"drives": drives(), "videos": self.root.to_string_lossy().replace('\\', "/")}).to_string();
-                    respond(&mut w, "200 OK", "application/json; charset=utf-8", body.as_bytes(), head)?;
-                }
-                Some("dir") => {
-                    let p = percent_decode(segs.get(2).copied().unwrap_or(""));
-                    match p.as_deref().and_then(list_dir) {
-                        Some(j) => {
-                            log!("フォルダの中身を送信 ({:?}): {:?}", peer, p);
-                            respond(&mut w, "200 OK", "application/json; charset=utf-8", j.to_string().as_bytes(), head)?
-                        }
-                        None => respond(&mut w, "404 Not Found", "text/plain", b"not found", head)?,
-                    }
-                }
-                Some("f") => {
-                    let p = percent_decode(segs.get(2).copied().unwrap_or(""));
-                    match p.as_deref().map(PathBuf::from).filter(|f| f.is_absolute() && f.is_file() && is_video(f)) {
-                        Some(f) => self.send_file(&mut w, &f, range.as_deref(), head, peer)?,
-                        None => {
-                            log!("動画の配信: 見つからない ({:?}) {:?}", peer, p);
-                            respond(&mut w, "404 Not Found", "text/plain", b"not found", head)?;
-                        }
-                    }
-                }
                 _ => respond(&mut w, "404 Not Found", "text/plain", b"not found", head)?,
             }
             if close {
@@ -356,50 +332,6 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>, depth: usize) {
             return;
         }
     }
-}
-
-/// PC のドライブ一覧("C:/" など)。Windows 以外では "/" だけ。
-pub fn drives() -> Vec<String> {
-    if cfg!(windows) {
-        (b'A'..=b'Z').map(|c| format!("{}:/", c as char)).filter(|d| Path::new(d).is_dir()).collect()
-    } else {
-        vec!["/".into()]
-    }
-}
-
-/// 絶対パスのフォルダの中身: 下のフォルダと動画ファイル(名前順)、親フォルダ。
-pub fn list_dir(p: &str) -> Option<serde_json::Value> {
-    let dir = PathBuf::from(p);
-    if !dir.is_absolute() || !dir.is_dir() {
-        return None;
-    }
-    let rd = std::fs::read_dir(&dir).ok()?;
-    let (mut dirs, mut files) = (Vec::new(), Vec::new());
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || name.starts_with('$') {
-            continue;
-        }
-        let Ok(ft) = e.file_type() else { continue };
-        if ft.is_dir() {
-            dirs.push(name);
-        } else if ft.is_file() && is_video(&e.path()) {
-            files.push((name, e.metadata().map(|m| m.len()).unwrap_or(0)));
-        }
-        if dirs.len() + files.len() >= MAX_FILES {
-            break;
-        }
-    }
-    dirs.sort_by_key(|a| a.to_lowercase());
-    files.sort_by_key(|a| a.0.to_lowercase());
-    let norm = |q: &Path| q.to_string_lossy().replace('\\', "/");
-    let parent = dir.parent().map(|q| norm(q));
-    Some(json!({
-        "path": norm(&dir),
-        "parent": parent,
-        "dirs": dirs,
-        "files": files.into_iter().map(|(n, z)| json!({"name": n, "size": z})).collect::<Vec<_>>(),
-    }))
 }
 
 pub fn is_video(p: &Path) -> bool {
@@ -514,7 +446,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fsr-video-http-{}", random_hex(4)));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a b.mp4"), b"0123456789").unwrap();
-        let v = VideoState::new(dir.clone());
+        let v = VideoState::new(dir);
         let t = v.new_token();
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
@@ -534,17 +466,6 @@ mod tests {
         assert!(r.ends_with("234"));
         assert!(r.contains("Content-Range: bytes 2-4/10"));
         assert!(get("/v/bad/a%20b.mp4", "").starts_with("HTTP/1.1 403"));
-        let enc = |q: &str| q.bytes().map(|b| format!("%{:02X}", b)).collect::<String>();
-        std::fs::create_dir_all(dir.join("sub")).unwrap();
-        std::fs::write(dir.join("note.txt"), b"x").unwrap();
-        let d = get(&format!("/dir/{}/{}", t, enc(&dir.to_string_lossy())), "");
-        assert!(d.starts_with("HTTP/1.1 200"), "{}", d);
-        assert!(d.contains("\"sub\"") && d.contains("a b.mp4") && !d.contains("note.txt"), "{}", d);
-        assert!(get(&format!("/drives/{}", t), "").contains("drives"));
-        let f = get(&format!("/f/{}/{}", t, enc(&dir.join("a b.mp4").to_string_lossy())), "Range: bytes=0-1\r\n");
-        assert!(f.starts_with("HTTP/1.1 206") && f.ends_with("01"), "{}", f);
-        assert!(get(&format!("/f/{}/{}", t, enc(&dir.join("note.txt").to_string_lossy())), "").starts_with("HTTP/1.1 404"));
-        assert!(get(&format!("/dir/bad/{}", enc("/")), "").starts_with("HTTP/1.1 403"));
         let list = get(&format!("/list/{}", t), "");
         assert!(list.contains("a b.mp4"));
         assert!(!list.contains("root"), "{}", list);
